@@ -1,8 +1,0 @@
-{
-  "reason": "Preserved partial real measurements, continue once per unique SHA-256; no image excluded",
-  "inference_sources_sha256_at_continuation": {
-    "modulos/ocr_engine.py": "292860c9cf05618c693c776f2f11c5a532ae9566aedceea30b93bb5d1922f399",
-    "modulos/ocr_analysis.py": "feeb9fbbbba601375ebd629fd91065712e0164993c28010ede4a041d250a84f8"
-  },
-  "note": "Inference behavior unchanged during the photographic run; only a legacy API docstring was added."
-}

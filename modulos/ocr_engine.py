@@ -1,206 +1,183 @@
-"""
-Módulo de Reconocimiento Óptico de Caracteres (OCR)
+"""Tesseract por subprocess: TSV literal, límites de tiempo y cancelación."""
 
- Instanciación Única y Thread-Safe (Singleton)
-   - Carga el motor PaddleOCR en memoria una sola vez para evitar sobrecarga y bloqueos
+from __future__ import annotations
 
- Preprocesamiento Avanzado de Imagen
-   - Genera múltiples filtros sobre la imagen filtro bilateral para maximizar la legibilidad
-
- Pipeline de Reconocimiento resiliente con Salida Temprana
-   - Intenta primero una lectura directa rápida. Si cumple con un umbral alto de confianza  y longitud, devuelve el resultado al instante para ahorrar cómputo.
-   - Si no es concluyente, prueba en cascada todas las variantes preprocesadas y rotaciones, seleccionando el texto con mayor puntuación ponderada
-
-Uso del Scoring queda PaddleOCR:
-   - Evalúa y premia la confianza del OCR, la cantidad de caracteres alfanuméricos y el ajuste a patrones típicos de precintos de seguridad
-"""
-
-import logging
-import re
-import threading
-from collections.abc import Iterator
+from dataclasses import dataclass
+from functools import lru_cache
+import math
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import time
 
 import cv2
-import numpy as np
-from paddleocr import PaddleOCR
-
-logging.getLogger("ppocr").setLevel(logging.ERROR)
-
-_ocr = None
-_ocr_lock = threading.Lock()
-# El singleton protege la carga; este lock protege las inferencias reales si
-# en el futuro varios consumidores comparten el mismo predictor nativo.
-_inferencia_lock = threading.Lock()
-
-SCORE_RAPIDO_UMBRAL = 0.88
-MIN_CHARS_RAPIDO = 5
-PATRON_PRECINTO = re.compile(r"[A-Z0-9][A-Z0-9\-]{3,}")
 
 
-def get_ocr() -> PaddleOCR:
-    """Carga PaddleOCR una sola vez, fuera del hilo de la interfaz."""
-    global _ocr
-    with _ocr_lock:
-        if _ocr is None:
-            _ocr = PaddleOCR(
-                use_angle_cls=True,
-                lang="en",
-                show_log=False,
-                rec_algorithm="SVTR_LCNet",
-            )
-        return _ocr
+class OcrCancelled(InterruptedError):
+    pass
 
 
-def warmup_ocr() -> None:
-    get_ocr()
+class OcrTimeout(TimeoutError):
+    pass
 
 
-def score(conf: float, texto: str) -> float:
-    if not texto:
-        return 0.0
-
-    texto_upper = texto.upper()
-    chars_validos = len(re.sub(r"[^A-Z0-9\-]", "", texto_upper))
-    if chars_validos == 0:
-        return 0.0
-
-    base = (chars_validos ** 0.7) * (conf ** 1.3)
-    if PATRON_PRECINTO.search(texto_upper):
-        base *= 1.25
-    return base
+@dataclass
+class TsvResult:
+    words: list[dict]
+    malformed_rows: int = 0
 
 
-def _limpiar_texto(texto: str) -> str:
-    lineas = [l.strip() for l in texto.splitlines() if l.strip()]
-    if len(lineas) <= 3 and all(len(l) <= 20 for l in lineas):
-        return " ".join(lineas)
-    return "\n".join(lineas)
-
-
-def _iter_preprocesar(img: np.ndarray) -> Iterator[tuple[str, np.ndarray]]:
-    """Mismos píxeles y orden original; calcula sólo lo que llega a utilizarse."""
-    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    yield "Original", g
-
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
-    clahe_img = clahe.apply(g)
-    yield "CLAHE", clahe_img
-
-    kernel_sharp = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]], dtype=np.float32)
-    yield "Sharp", cv2.filter2D(g, -1, kernel_sharp)
-
-    yield "Bilateral", cv2.bilateralFilter(g, 9, 75, 75)
-
-    _, binarizada = cv2.threshold(
-        clahe_img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+def get_ocr():
+    """Resuelve Windows/PATH sin depender del directorio de trabajo."""
+    configured = os.environ.get("SEAI_TESSERACT_CMD", "").strip().strip('"')
+    if configured:
+        executable = shutil.which(configured)
+        if executable:
+            return executable
+        raise RuntimeError(f"No se encuentra Tesseract en SEAI_TESSERACT_CMD: {configured}")
+    executable = shutil.which("tesseract")
+    if executable:
+        return executable
+    for base in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)"),
+                 os.environ.get("LOCALAPPDATA")):
+        if base:
+            for folder in ("Tesseract-OCR", "Programs/Tesseract-OCR"):
+                path = Path(base) / folder / "tesseract.exe"
+                if path.is_file():
+                    return str(path)
+    raise RuntimeError(
+        "No se encontró Tesseract. Instálalo y agrégalo a PATH o configura "
+        "SEAI_TESSERACT_CMD con la ruta completa a tesseract.exe."
     )
-    yield "Otsu-CLAHE", binarizada
-
-    adaptativa = cv2.adaptiveThreshold(
-        g, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 10
-    )
-    yield "AdaptThresh", adaptativa
 
 
-def preprocesar(img: np.ndarray) -> list[tuple[str, np.ndarray]]:
-    """Interfaz original conservada para los consumidores existentes."""
-    return list(_iter_preprocesar(img))
+def _run(command, payload=None, *, timeout=3.0, cancelled=None):
+    deadline = time.monotonic() + timeout
+    if cancelled and cancelled():
+        raise OcrCancelled("Solicitud invalidada")
+    environment = os.environ.copy()
+    environment.setdefault("OMP_THREAD_LIMIT", "1")
+    try:
+        process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, env=environment,
+                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except OSError as exc:
+        raise RuntimeError(f"No se pudo iniciar Tesseract: {exc}") from exc
+    try:
+        pending = payload
+        while True:
+            if cancelled and cancelled():
+                raise OcrCancelled("Solicitud invalidada")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise OcrTimeout("Se agotó el tiempo de la llamada a Tesseract")
+            try:
+                output, errors = process.communicate(input=pending, timeout=min(.08, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                pending = None
+        if process.returncode:
+            message = errors.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(f"Tesseract: {message or 'ejecución fallida'}")
+        return output
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None:
+                stream.close()
 
 
-def _rotar_90(img: np.ndarray, sentido: str) -> np.ndarray:
-    if sentido == "izquierda":
-        return cv2.rotate(img, cv2.ROTATE_90_COUNTERCLOCKWISE)
-    return cv2.rotate(img, cv2.ROTATE_90_CLOCKWISE)
+def _data_options():
+    directory = os.environ.get("SEAI_TESSDATA_DIR", "").strip().strip('"')
+    if not directory and not os.environ.get("TESSDATA_PREFIX"):
+        bundled = Path(__file__).resolve().parents[1] / "models" / "tessdata_best"
+        if os.environ.get("SEAI_TESSERACT_LANG", "eng") == "eng" and (bundled / "eng.traineddata").is_file():
+            directory = str(bundled)
+    return ["--tessdata-dir", directory] if directory else []
 
 
-def ejecutar_ocr(imagen: np.ndarray, *, conservar_fragmentos=False):
-    """Resultado nativo completo, sin descartar cajas ni confianzas por línea."""
-    engine = get_ocr()
-    with _inferencia_lock:
-        # PaddleOCR 2.7 descarta score < drop_score (0.5) en __call__.
-        # El análisis conserva esos fragmentos como evidencia; nunca los acepta
-        # por bajar este filtro. El umbral de decisión sigue siendo independiente.
-        original = getattr(engine, "drop_score", None)
-        if conservar_fragmentos and original is not None:
-            engine.drop_score = 0.0
-        try:
-            return engine.ocr(imagen, cls=True)
-        finally:
-            if conservar_fragmentos and original is not None:
-                engine.drop_score = original
+@lru_cache(maxsize=4)
+def _check_languages(executable, language, directory, prefix):
+    command = [executable, *_data_options(), "--list-langs"]
+    output = _run(command, timeout=3.0).decode("utf-8", errors="replace")
+    available = {line.strip() for line in output.splitlines()[1:] if line.strip()}
+    missing = set(language.split("+")) - available
+    if missing:
+        raise RuntimeError(
+            "Faltan idiomas de Tesseract: " + ", ".join(sorted(missing)) +
+            ". Instala sus archivos .traineddata o ajusta SEAI_TESSERACT_LANG/"
+            "SEAI_TESSDATA_DIR."
+        )
 
 
-def detectar_texto(imagen: np.ndarray):
-    """Sólo detector Paddle, sin reconocimiento ni segundo predictor."""
-    engine = get_ocr()
-    with _inferencia_lock:
-        # En PaddleOCR 2.7.3 ocr(rec=False) hace `if not dt_boxes` sobre
-        # ndarray y falla cuando hay texto. Usar el mismo detector nativo,
-        # sin ese wrapper y sin cargar otra red ni ejecutar reconocimiento.
-        boxes, _elapsed = engine.text_detector(imagen)
-        return [boxes.tolist() if boxes is not None and len(boxes) else None]
+def warmup_ocr():
+    executable = get_ocr()
+    _check_languages(executable, os.environ.get("SEAI_TESSERACT_LANG", "eng"),
+                     os.environ.get("SEAI_TESSDATA_DIR", ""),
+                     os.environ.get("TESSDATA_PREFIX", ""))
+    if os.environ.get("SEAI_TEXT_EMPHASIS", "1").lower() not in {"0", "false", "no"}:
+        from modulos.text_emphasis import warmup_detector
+        warmup_detector()
+    return executable
 
 
-def _ocr_imagen(imagen: np.ndarray) -> tuple[str, float]:
-    res = ejecutar_ocr(imagen)
-    if not res or not res[0]:
-        return "", 0.0
-    lineas = res[0]
-    texto = "\n".join(l[1][0] for l in lineas)
-    conf = sum(l[1][1] for l in lineas) / len(lineas)
-    return texto, conf
+def parse_tsv(payload) -> TsvResult:
+    """Tesseract TSV NO es CSV con comillas.
 
-
-def mejor_ocr(img: np.ndarray, *, read=None) -> tuple[str, float, str, float]:
-    """Compatibilidad histórica y comparación de línea base.
-
-    OcrWorker usa ocr_reader para anexar evidencia mediante ``read`` sin cambiar
-    el recorrido original. Esta API no autoriza confirmaciones operativas.
+    Una palabra que sea una comilla literal nunca puede consumir las filas
+    siguientes. Sólo se aceptan filas de palabra (nivel 5), con geometría y
+    confianza válidas; las filas estructurales no son texto reconocido.
     """
-    mejor_texto = ""
-    mejor_score = -1.0
-    mejor_metodo = "ninguno"
-    mejor_conf = 0.0
+    if isinstance(payload, bytes):
+        payload = payload.decode("utf-8-sig", errors="replace")
+    rows = payload.splitlines()
+    expected = ["level", "page_num", "block_num", "par_num", "line_num", "word_num",
+                "left", "top", "width", "height", "conf", "text"]
+    if not rows or rows[0].lstrip("\ufeff").split("\t") != expected:
+        raise RuntimeError("Tesseract no devolvió un encabezado TSV válido")
+    words, malformed = [], 0
+    for row in rows[1:]:
+        fields = row.split("\t", 11)
+        if len(fields) != 12:
+            malformed += bool(row)
+            continue
+        if fields[0] != "5":
+            continue
+        try:
+            ids = tuple(int(value) for value in fields[1:6])
+            x, y, width, height = (int(value) for value in fields[6:10])
+            confidence = float(fields[10]) / 100.0
+            if (not math.isfinite(confidence) or not 0 <= confidence <= 1 or
+                    min(x, y) < 0 or min(width, height) <= 0 or min(ids) < 0):
+                raise ValueError("Datos de palabra inválidos")
+        except (ValueError, OverflowError):
+            malformed += 1
+            continue
+        text = fields[11].strip()
+        if text:
+            words.append({"text": text, "confidence": confidence,
+                          "box": [x, y, width, height], "line": list(ids[:4])})
+    return TsvResult(words, malformed)
 
-    def _leer(nombre, imagen, rotation=0):
-        return read(imagen, nombre, rotation) if read is not None else _ocr_imagen(imagen)
 
-    def _evaluar(nombre: str, imagen: np.ndarray, rotation=0) -> bool:
-        nonlocal mejor_texto, mejor_score, mejor_metodo, mejor_conf
-        texto, conf = _leer(nombre, imagen, rotation)
-        if not texto:
-            return False
-        s = score(conf, texto)
-        if s > mejor_score:
-            mejor_score = s
-            mejor_texto = _limpiar_texto(texto)
-            mejor_metodo = nombre
-            mejor_conf = conf
-        chars_validos = len(re.sub(r"[^A-Z0-9\-]", "", texto.upper()))
-        return conf >= SCORE_RAPIDO_UMBRAL and chars_validos >= MIN_CHARS_RAPIDO
-
-    texto_rapido, conf_rapido = _leer('Directo-BGR', img)
-    if texto_rapido:
-        s = score(conf_rapido, texto_rapido)
-        mejor_score = s
-        mejor_texto = _limpiar_texto(texto_rapido)
-        mejor_metodo = "Directo-BGR"
-        mejor_conf = conf_rapido
-        chars_validos = len(re.sub(r"[^A-Z0-9\-]", "", texto_rapido.upper()))
-        if conf_rapido >= SCORE_RAPIDO_UMBRAL and chars_validos >= MIN_CHARS_RAPIDO:
-            return mejor_texto, mejor_score, mejor_metodo + " [early-exit]", mejor_conf
-
-    for nombre, imagen_proc in _iter_preprocesar(img):
-        if _evaluar(f"Proc:{nombre}", imagen_proc):
-            return mejor_texto, mejor_score, mejor_metodo + " [early-exit]", mejor_conf
-
-    for sentido in ("izquierda", "derecha"):
-        img_rot = _rotar_90(img, sentido)
-        rotation = -90 if sentido == 'izquierda' else 90
-        if _evaluar(f"Rot90{sentido.capitalize()}-BGR", img_rot, rotation):
-            return mejor_texto, mejor_score, mejor_metodo + " [early-exit]", mejor_conf
-        for nombre, imagen_proc in _iter_preprocesar(img_rot):
-            if _evaluar(f"Rot90{sentido.capitalize()}-{nombre}", imagen_proc, rotation):
-                return mejor_texto, mejor_score, mejor_metodo + " [early-exit]", mejor_conf
-
-    return mejor_texto, mejor_score, mejor_metodo, mejor_conf
+def read_words(image, *, executable=None, language=None, psm=11, timeout=3.0,
+               cancelled=None) -> TsvResult:
+    executable = executable or get_ocr()
+    language = language or os.environ.get("SEAI_TESSERACT_LANG", "eng")
+    if timeout <= 0:
+        raise OcrTimeout("Presupuesto OCR agotado")
+    if cancelled and cancelled():
+        raise OcrCancelled("Solicitud invalidada")
+    ok, encoded = cv2.imencode(".png", image, [cv2.IMWRITE_PNG_COMPRESSION, 1])
+    if not ok:
+        raise ValueError("No se pudo preparar la imagen para OCR")
+    # Sin diccionarios de códigos, whitelist ni autocorrección de identificadores.
+    command = [executable, "stdin", "stdout", *_data_options(), "-l", language,
+               "--oem", "1", "--psm", str(psm), "--dpi", "300",
+               "-c", "load_system_dawg=0", "-c", "load_freq_dawg=0",
+               "-c", "tessedit_create_tsv=1", "-c", "tessedit_create_txt=0"]
+    output = _run(command, encoded.tobytes(), timeout=timeout, cancelled=cancelled)
+    return parse_tsv(output)

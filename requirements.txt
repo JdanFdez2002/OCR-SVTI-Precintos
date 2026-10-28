@@ -1,10 +1,6 @@
-paddlepaddle==2.6.2
-paddleocr==2.7.3
 numpy==1.26.4
 opencv-python==4.6.0.66
-pillow
-dotenv
+python-dotenv
 openpyxl
 PySide6>=6.6,<7
 requests>=2.31,<3
-psutil>=5.9,<8

@@ -10,10 +10,8 @@ Responsabilidades:
 
 import threading
 import json
-import time
 from datetime import date, datetime
 
-import cv2
 from PySide6.QtCore import QDate, QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QKeyEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
@@ -48,14 +46,10 @@ from config import (
     CANAL_RTSP_MEDIO,
     VEL_FOCO,
     asegurar_carpeta_capturas,
-    REGION_MAX_AGE_S,
-    SEGUIMIENTO_INTERVALO_S,
-    DETECCION_EN_VIVO,
 )
 from modulos.camera_service import CameraService
 from modulos.excel_manifest import RegistroEsperado, cargar_excel
 from modulos.ocr_worker import OcrWorker
-from modulos.identifier_policy import append_decision, decide_arrival, normalize_identifier
 from modulos.ptz_worker import PtzWorker
 from modulos.settings_store import (
     load_camera_settings,
@@ -141,10 +135,7 @@ class MainWindow(QMainWindow):
         self._llenando_tabla = False
         self._generation = 0
         self._closing = False
-        self._last_video_request = 0.
-        self._last_sequence = -1
         self._last_display_sequence = -1
-        self._region_packet = None
         self._video_epoch = None
         self._evidence = None
         self._held_ptz = set()
@@ -159,8 +150,6 @@ class MainWindow(QMainWindow):
         self._ocr.engine_ready.connect(self._on_ocr_listo)
         self._ocr.engine_failed.connect(self._on_ocr_fallo_motor)
         self._ocr.analyzed.connect(self._on_ocr_analisis)
-        self._ocr.regions.connect(self._on_regiones)
-        self._ocr.live_analysis.connect(self._on_ocr_dinamico)
         self._ocr.analysis_failed.connect(self._on_ocr_failed_context)
         self._ocr.start()
         self._ocr.pedir_warmup()
@@ -571,16 +560,7 @@ class MainWindow(QMainWindow):
         return colores.get(estado, QColor("#FFFFFF"))
 
     def _normalizar_lectura(self, texto: str) -> str:
-        return normalize_identifier(texto)
-
-    def _actualizar_manifiesto_por_ocr(self, analysis) -> str:
-        decision = decide_arrival(self._manifiesto, analysis)
-        append_decision(asegurar_carpeta_capturas() / 'decisiones.jsonl', decision, self._evidence)
-        if decision.accepted:
-            self._manifiesto[decision.row].estado = decision.next_state
-            self._llenar_tabla_excel()
-            self._tabla_excel.selectRow(decision.row)
-        return decision.reason
+        return texto.strip().upper()
 
     def _vincular_ptz(self, boton: HoldButton, pan=None, tilt=None, zoom=None, focus=None):
         def start():
@@ -737,9 +717,7 @@ class MainWindow(QMainWindow):
     def _desconectar(self):
         self._generation += 1
         self._ocr.invalidar()
-        self._region_packet = None
         self._video_epoch = None
-        self._last_sequence = -1
         self._last_display_sequence = -1
         self._ocr_ocupado = False
         self._held_ptz.clear()
@@ -762,7 +740,6 @@ class MainWindow(QMainWindow):
         sample = self._service.copiar_muestra(after_sequence=self._last_display_sequence)
         if sample is None:
             self._video.limpiar()
-            self._region_packet = None
             if self._video_epoch is not None:
                 self._ocr.invalidar()
                 self._ptz.cancelar_automatismos()
@@ -779,23 +756,10 @@ class MainWindow(QMainWindow):
         frame, sequence, captured_at, stream_epoch = sample
         if self._video_epoch != stream_epoch:
             self._ocr.invalidar()
-            self._region_packet = None
             self._video_epoch = stream_epoch
         if frame is not None:
             self._video.mostrar_frame(frame)
             self._last_display_sequence = sequence
-        packet = self._region_packet
-        if (DETECCION_EN_VIVO and packet and frame is not None and packet['shape'] == list(frame.shape)
-                and time.monotonic() - packet['captured_at'] <= REGION_MAX_AGE_S):
-            self._video.mostrar_regiones(packet['regions'])
-        else:
-            self._video.mostrar_regiones([])
-        if (DETECCION_EN_VIVO and frame is not None and self._ocr_listo and sequence != self._last_sequence
-                and time.monotonic() - self._last_video_request >= SEGUIMIENTO_INTERVALO_S):
-            self._last_sequence = sequence
-            self._last_video_request = time.monotonic()
-            self._ocr.pedir_video(frame, generation=self._generation, sequence=sequence,
-                                  captured_at=captured_at, stream_epoch=stream_epoch)
         self._set_estado("En vivo", "#A6E3A1")
         self._actualizar_captura()
 
@@ -804,19 +768,6 @@ class MainWindow(QMainWindow):
         capture_running = self._captura_thread is not None and self._captura_thread.is_alive()
         self._btn_capturar.setEnabled(bool(hay_video and self._ocr_listo and not self._ocr_ocupado
                                           and not capture_running and not self._closing))
-
-    def _on_regiones(self, packet):
-        if (self._service is not None and packet['generation'] == self._generation
-                and packet['stream_epoch'] == self._video_epoch
-                and time.monotonic() - packet['captured_at'] <= REGION_MAX_AGE_S):
-            self._region_packet = packet
-
-    def _on_ocr_dinamico(self, packet):
-        context, analysis = packet['context'], packet['analysis']
-        if (context['generation'] == self._generation and self._service is not None
-                and context['stream_epoch'] == self._video_epoch
-                and time.monotonic()-context['captured_at'] <= REGION_MAX_AGE_S and not self._ocr_ocupado):
-            self._lbl_ocr_estado.setText('Candidato en video (requiere captura): ' + (analysis.suggested_text or 'sin lectura'))
 
     def _on_vel(self, valor: int):
         self._vel_mov = valor
@@ -898,12 +849,13 @@ class MainWindow(QMainWindow):
 
     def _on_ocr_listo(self):
         self._ocr_listo = True
-        self._lbl_ocr_motor.setText("Motor OCR: listo")
+        self._lbl_ocr_motor.setText("Motor OCR: Tesseract listo")
         self._actualizar_captura()
 
     def _on_ocr_fallo_motor(self, mensaje: str):
-        self._ocr_listo = False
-        self._lbl_ocr_motor.setText("Motor OCR: error")
+        self._ocr_listo = True  # La captura manual sigue disponible sin OCR.
+        self._lbl_ocr_motor.setText("Motor OCR: no disponible")
+        self._actualizar_captura()
         QMessageBox.critical(self, "OCR", f"No se pudo cargar el motor OCR:\n{mensaje}")
 
     def _on_ocr_analisis(self, packet):
@@ -918,14 +870,13 @@ class MainWindow(QMainWindow):
             with open(context['report'], 'x', encoding='utf-8') as stream:
                 json.dump(dict(analysis=analysis.to_dict(), evidence=self._evidence), stream,
                           ensure_ascii=False, indent=2, allow_nan=False)
-            decision = self._actualizar_manifiesto_por_ocr(analysis)
+            decision = 'Comparación automática desactivada'
         except (OSError, ValueError) as exc:
             decision = 'Sin confirmación: no se pudo conservar la trazabilidad: ' + str(exc)
-        selected_text = getattr(analysis,'recognized_text','') or analysis.confirmed_identifier or analysis.suggested_text or ''
-        best = next((c for c in analysis.candidates if c.text == selected_text), None)
-        conf = getattr(analysis,'confidence',best.confidence_min if best else 0.)
-        score = getattr(analysis,'selection_score',best.score if best else conf)
-        variante = getattr(analysis,'selected_variant',None) or (', '.join(dict.fromkeys(d.variant for d in best.detections)) if best else 'ninguno')
+        selected_text = analysis.recognized_text
+        conf = analysis.confidence
+        score = analysis.selection_score
+        variante = analysis.selected_variant
         self._lbl_ocr_estado.setText(f'{analysis.status}: {analysis.reason}')
         self._lbl_comparacion.setText('Comparación: '+decision if self._manifiesto else
                                       'Comparación: sin manifiesto; lectura visual independiente')

@@ -13,6 +13,7 @@ import time
 from pathlib import Path
 
 import cv2
+import numpy as np
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
@@ -244,6 +245,13 @@ class MotorWindow(QMainWindow):
         self._btn_procesar.setEnabled(False)
         self._barra.setRange(0, len(self._imagenes))
         self._barra.setValue(0)
+        self._btn_exportar.setEnabled(False)
+        for fila in range(self._tabla.rowCount()):
+            self._tabla.item(fila, 0).setData(Qt.ItemDataRole.UserRole, None)
+            self._tabla.item(fila, 0).setToolTip(str(self._imagenes[fila]))
+            for columna in range(1, 6):
+                self._tabla.item(fila, columna).setText("")
+            self._tabla.item(fila, 6).setText("Pendiente")
         self._actualizar_progreso(0)
         self._enviar_siguiente()
 
@@ -256,7 +264,7 @@ class MotorWindow(QMainWindow):
             self._lbl_estado.setText(f"Procesando: {ruta.name}")
 
             try:
-                imagen = cv2.imread(str(ruta), cv2.IMREAD_COLOR)
+                imagen = cv2.imdecode(np.fromfile(str(ruta), dtype=np.uint8), cv2.IMREAD_COLOR)
             except Exception as exc:
                 self._registrar_error(fila, f"No se pudo leer: {exc}")
                 self._indice_actual += 1
@@ -272,7 +280,13 @@ class MotorWindow(QMainWindow):
             self._inicio_imagen = time.perf_counter()
             # Se entrega el ndarray BGR directamente al mismo worker que usa
             # la aplicacion de camara; el motor decide su propio pipeline.
-            self._ocr.pedir_ocr(imagen)
+            try:
+                self._ocr.pedir_ocr(imagen, input_mode="full_photo")
+            except Exception as exc:
+                self._registrar_error(fila, f"Error OCR: {exc}")
+                self._indice_actual += 1
+                self._actualizar_progreso(self._indice_actual)
+                continue
             return
 
         self._finalizar_procesamiento()
@@ -406,6 +420,10 @@ class MotorWindow(QMainWindow):
                 hoja.column_dimensions[chr(64 + indice)].width = ancho
             for fila_excel in hoja.iter_rows(min_row=2):
                 for celda in fila_excel:
+                    # El texto reconocido debe exportarse literalmente, aunque
+                    # empiece con '='; no es una fórmula de Excel.
+                    if isinstance(celda.value, str):
+                        celda.data_type = "s"
                     celda.alignment = Alignment(vertical="top", wrap_text=True)
 
             hoja.freeze_panes = "A2"
@@ -466,7 +484,7 @@ class MotorWindow(QMainWindow):
 
         ruta = self._imagenes[fila]
         try:
-            imagen = cv2.imread(str(ruta), cv2.IMREAD_COLOR)
+            imagen = cv2.imdecode(np.fromfile(str(ruta), dtype=np.uint8), cv2.IMREAD_COLOR)
         except Exception as exc:
             self._vista.setText(f"No se pudo cargar la imagen:\n{exc}")
             return
@@ -521,12 +539,12 @@ class MotorWindow(QMainWindow):
 
     def _on_analisis_detallado(self, packet):
         analysis = packet['analysis']
-        if self._indice_valido():
+        if self._procesando and self._indice_valido():
             item = self._tabla.item(self._indice_actual, 0)
             if item is not None:
                 item.setData(Qt.ItemDataRole.UserRole, analysis.to_dict())
-                item.setToolTip(analysis.status + '\n' + analysis.reason + '\nCandidatos:\n' +
-                                '\n'.join(c.text for c in analysis.candidates))
+                item.setToolTip(str(self._imagenes[self._indice_actual]) + '\n' +
+                                analysis.status + '\n' + analysis.reason)
 
     def closeEvent(self, event) -> None:
         self.centralWidget().setEnabled(False)

@@ -82,6 +82,7 @@ reportes/
 *.h5
 *.engine
 checkpoints/
+models/tessdata_best/
 
 # =========================
 # Bases de datos locales

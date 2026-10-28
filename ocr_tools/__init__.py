@@ -1,1 +1,1 @@
-"""Evaluación local: nombre propio para no colisionar con paddleocr.tools."""
+"""Instalación de los modelos necesarios para el lector actual."""
