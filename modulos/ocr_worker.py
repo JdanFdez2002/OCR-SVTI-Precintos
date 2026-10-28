@@ -1,4 +1,4 @@
-"""Worker Qt compatible con el motor OCR desactivado."""
+"""Worker Qt para el OCR de capturas manuales."""
 
 import threading
 
@@ -10,8 +10,6 @@ class OcrWorker(QThread):
     engine_failed = Signal(str)
     result = Signal(str, float, str, float)
     analyzed = Signal(object)
-    regions = Signal(object)
-    live_analysis = Signal(object)
     failed = Signal(str)
     analysis_failed = Signal(object)
 
@@ -20,11 +18,8 @@ class OcrWorker(QThread):
         self._condition = threading.Condition()
         self._stopped = False
         self._warmup = False
-        self._manual = self._live = None
+        self._manual = None
         self._epoch = 0
-        self.dropped_frames = 0
-        self.live_detection_enabled = False
-        self.live_ocr_enabled = False
 
     def pedir_warmup(self):
         with self._condition:
@@ -43,22 +38,17 @@ class OcrWorker(QThread):
                 )
                 self._condition.notify()
 
-    def pedir_video(self, frame, *, generation, sequence, captured_at, stream_epoch):
-        # El seguimiento de regiones OCR queda desactivado hasta implementar
-        # el lector genérico. La captura y el video siguen en manos de la UI.
-        return None
-
     def invalidar(self):
         with self._condition:
             self._epoch += 1
-            self._manual = self._live = None
+            self._manual = None
             self._condition.notify()
 
     def detener(self):
         with self._condition:
             self._stopped = True
             self._epoch += 1
-            self._manual = self._live = None
+            self._manual = None
             self._condition.notify()
 
     def _valid(self, epoch):
@@ -84,7 +74,8 @@ class OcrWorker(QThread):
 
             try:
                 if kind == "warmup":
-                    # El worker está disponible, pero no existe motor OCR.
+                    from modulos.ocr_engine import warmup_ocr
+                    warmup_ocr()
                     if not self._stopped:
                         self.engine_ready.emit()
                     continue
@@ -112,8 +103,11 @@ class OcrWorker(QThread):
                 if not self._valid(epoch):
                     continue
                 self.analyzed.emit({"analysis": analysis, "context": context})
-                self.result.emit("", 0.0, "no_implementado", 0.0)
+                self.result.emit(analysis.recognized_text, analysis.selection_score,
+                                 analysis.selected_variant, analysis.confidence)
             except Exception as exc:
-                if kind == "manual" and self._valid(job[0]):
+                if kind == "warmup":
+                    self.engine_failed.emit(str(exc))
+                elif self._valid(job[0]):
                     self.analysis_failed.emit({"context": job[4], "error": str(exc)})
                     self.failed.emit(str(exc))
