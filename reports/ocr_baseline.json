@@ -1,0 +1,200 @@
+{
+  "baseline_commit": "e35236e",
+  "baseline_source_sha256": "f2d060f14b059c1639df016b20a22b2941f8cad5ebc9ac422e24df02f169d1c5",
+  "environment": {
+    "python": "3.10.0",
+    "platform": "Windows-10-10.0.22621-SP0",
+    "packages": {
+      "paddlepaddle": "2.6.2",
+      "paddleocr": "2.7.3",
+      "numpy": "1.26.4",
+      "opencv-python": "4.6.0.66",
+      "PySide6": "6.12.0",
+      "psutil": "7.2.2"
+    },
+    "cuda_compiled": false,
+    "device": "cpu",
+    "paddle_config": {
+      "use_gpu": false,
+      "use_angle_cls": true,
+      "rec_algorithm": "SVTR_LCNet",
+      "ocr_version": "PP-OCRv4",
+      "det_limit_side_len": 960,
+      "drop_score": 0.5,
+      "cpu_threads": 10,
+      "enable_mkldnn": false
+    },
+    "model_sha256": {
+      "det_model_dir": {
+        "inference.pdiparams": "83676ec730627ab4502f401410a4b6a3ce1c0bb98fa249b71db055b6bddae051",
+        "inference.pdiparams.info": "2fe414d9eadf914bf44e3f9ba212988a6f26f364e4f87c6d0af57438ffffc0c4",
+        "inference.pdmodel": "c4bfb1b05d9d1d5a760801eaf6d20180ef7e47bcc675fb17d1f3a89da5fef427"
+      },
+      "rec_model_dir": {
+        "inference.pdiparams": "75f64a1ffb70c56b7a25655963ca16f5bf3286202e3f52ac972bee05cdee2f56",
+        "inference.pdiparams.info": "710d9f3d7c503067ae708f4bc3adc6973c0d6391adb7a1470c36eb70da6b5b83",
+        "inference.pdmodel": "85b952f05f709af259cfe4254012aa7208bef0998f71f57a15495446f25ccd43"
+      },
+      "cls_model_dir": {
+        "inference.pdiparams": "d1efda1b80e174b4fcb168a035ac96c1af4938892bd86a55f300a6027105d08c",
+        "inference.pdiparams.info": "ee0c2eaa4c09814802bf520c01dfdbc1345dc2879dc9e67424d32c7b0ee88e59",
+        "inference.pdmodel": "3c4337ec61722a20b1dca2e5bfaffc313c0592bc89ad6e0d45168224186f6683"
+      }
+    }
+  },
+  "model_load_s": 2.887782600708306,
+  "controlled_reproductions_not_photographic_accuracy": {
+    "baseline": [
+      {
+        "case": "empty",
+        "ocr_calls": 21,
+        "result": [
+          "",
+          -1.0,
+          "ninguno",
+          0.0
+        ]
+      },
+      {
+        "case": "short",
+        "ocr_calls": 21,
+        "result": [
+          "ABC",
+          2.1296617524793415,
+          "Directo-BGR",
+          0.99
+        ]
+      },
+      {
+        "case": "long_noise",
+        "ocr_calls": 1,
+        "result": [
+          "BRAND ABC123 EXTRA",
+          8.592504214885668,
+          "Directo-BGR [early-exit]",
+          0.99
+        ]
+      },
+      {
+        "case": "hyphens_only",
+        "ocr_calls": 1,
+        "result": [
+          "------",
+          3.45964572375913,
+          "Directo-BGR [early-exit]",
+          0.99
+        ]
+      },
+      {
+        "case": "early_exit_selects_previous",
+        "result": [
+          "BRAND ABC123 EXTRA",
+          7.263886159843651,
+          "Directo-BGR [early-exit]",
+          0.87
+        ],
+        "ocr_calls": 2
+      }
+    ],
+    "current": [
+      {
+        "case": "empty",
+        "ocr_calls": 21,
+        "result": [
+          "",
+          -1.0,
+          "ninguno",
+          0.0
+        ]
+      },
+      {
+        "case": "short",
+        "ocr_calls": 21,
+        "result": [
+          "ABC",
+          2.1296617524793415,
+          "Directo-BGR",
+          0.99
+        ]
+      },
+      {
+        "case": "long_noise",
+        "ocr_calls": 1,
+        "result": [
+          "BRAND ABC123 EXTRA",
+          8.592504214885668,
+          "Directo-BGR [early-exit]",
+          0.99
+        ]
+      },
+      {
+        "case": "hyphens_only",
+        "ocr_calls": 1,
+        "result": [
+          "------",
+          3.45964572375913,
+          "Directo-BGR [early-exit]",
+          0.99
+        ]
+      },
+      {
+        "case": "early_exit_selects_previous",
+        "result": [
+          "BRAND ABC123 EXTRA",
+          7.263886159843651,
+          "Directo-BGR [early-exit]",
+          0.87
+        ],
+        "ocr_calls": 2
+      }
+    ]
+  },
+  "preprocessing": {
+    "kind": "synthetic_preprocessing_only_mocked_ocr",
+    "samples": 12,
+    "shape": [
+      720,
+      1280,
+      3
+    ],
+    "variants_pixel_identical": true,
+    "ms": {
+      "baseline": {
+        "mean": 39.28130011384686,
+        "median": 37.53765020519495,
+        "samples": [
+          36.102100275456905,
+          39.18389976024628,
+          36.60030011087656,
+          38.25630061328411,
+          36.81899979710579,
+          33.29029958695173,
+          43.41730009764433,
+          31.86320047825575,
+          42.75029990822077,
+          53.46130020916462,
+          46.0365004837513,
+          33.59510004520416
+        ]
+      },
+      "current": {
+        "mean": 39.0774083789438,
+        "median": 37.83184988424182,
+        "samples": [
+          34.29879993200302,
+          37.60899975895882,
+          36.247200332582,
+          37.862599827349186,
+          50.344900228083134,
+          37.961400113999844,
+          34.88750010728836,
+          41.34050011634827,
+          48.29060006886721,
+          37.90790028870106,
+          37.80109994113445,
+          34.37739983201027
+        ]
+      }
+    }
+  }
+}

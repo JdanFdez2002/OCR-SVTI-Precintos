@@ -1,0 +1,19 @@
+{
+  "kind": "historical_native_real_photo_BGR_rotation_evidence_not_accuracy",
+  "unique_photos": 64,
+  "rotations": {
+    "0": {
+      "high_confidence_lines": 38,
+      "images_with_high_confidence_line": 26
+    },
+    "90": {
+      "high_confidence_lines": 65,
+      "images_with_high_confidence_line": 50
+    },
+    "-90": {
+      "high_confidence_lines": 58,
+      "images_with_high_confidence_line": 46
+    }
+  },
+  "note": "Positive 90 means clockwise. Confidence is not exact-identifier ground truth. No reference identifiers used."
+}

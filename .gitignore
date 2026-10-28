@@ -1,3 +1,103 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+.venv/
+venv/
+env/
+ENV/
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# =========================
+# Variables y credenciales
+# =========================
+.env
+.env.*
+!.env.example
+
+config.local.py
+secrets.py
+credentials.json
+*.pem
+*.key
+*.crt
+
+# =========================
+# IDE y sistema operativo
+# =========================
+.vscode/
+.idea/
+*.code-workspace
+
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# =========================
+# Logs y temporales
+# =========================
+*.log
+logs/
+log/
+tmp/
+temp/
+cache/
+
+# =========================
+# Capturas, imágenes y videos
+# =========================
+capturas/
+imagenes/
+images/
+videos/
+grabaciones/
+evidencias/
+
+# =========================
+# Resultados generados por OCR
+# =========================
+outputs/
+output/
+resultados/
+results/
+runs/
+reportes/
+
+# =========================
+# Modelos pesados
+# =========================
+*.pt
+*.pth
+*.onnx
+*.weights
+*.h5
+*.engine
+checkpoints/
+
+# =========================
+# Bases de datos locales
+# =========================
+*.db
+*.sqlite
+*.sqlite3
+
+# =========================
+# Archivos comprimidos y exportaciones
+# =========================
+*.zip
+*.rar
+*.7z
+*.bak
+
 capturas_precintos/
 .env
 venv/

@@ -1,0 +1,42 @@
+{
+  "kind": "qt_offscreen_real_model_replayed_photo_generated_15fps_no_rtsp",
+  "photo_sha256": "7b18d5a6bb3aff9fce82425168b3816f75d41df7789b9439df88c684eff2717a",
+  "source_shape": [
+    1520,
+    2688,
+    3
+  ],
+  "before": {
+    "mode": "previous_workload_reenabled",
+    "duration_s": 10.220793499611318,
+    "cpu_s": 16.125,
+    "mean_cpu_one_core_percent": 157.7666156802132,
+    "rss_sampled_bytes": 718647296,
+    "ticks": 114,
+    "timer_interval_median_ms": 47.8129992261529,
+    "timer_interval_p95_ms": 315.95544014125994,
+    "intervals_over_66ms": 16,
+    "tick_processing_p95_ms": 53.148619830608354,
+    "conversions": 114,
+    "video_jobs": 27,
+    "detector_calls": 5,
+    "ocr_calls": 4
+  },
+  "after": {
+    "mode": "recovered_defaults",
+    "duration_s": 9.996698600240052,
+    "cpu_s": 1.265625,
+    "mean_cpu_one_core_percent": 12.660429713961852,
+    "rss_sampled_bytes": 719138816,
+    "ticks": 211,
+    "timer_interval_median_ms": 47.901250422000885,
+    "timer_interval_p95_ms": 48.35889497771859,
+    "intervals_over_66ms": 0,
+    "tick_processing_p95_ms": 31.668200623244047,
+    "conversions": 150,
+    "video_jobs": 0,
+    "detector_calls": 0,
+    "ocr_calls": 0
+  },
+  "limitation": "Previous workload is reenabled in current UI; no physical camera, network decoding or Windows display certification."
+}

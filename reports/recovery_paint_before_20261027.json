@@ -1,0 +1,24 @@
+{
+  "kind": "isolated_shown_qt_conversion_and_paint_no_ocr_no_rtsp",
+  "start_rss": 60334080,
+  "samples": [
+    {
+      "frames": 20,
+      "rss": 90124288
+    },
+    {
+      "frames": 40,
+      "rss": 90128384
+    },
+    {
+      "frames": 60,
+      "rss": 90148864
+    },
+    {
+      "frames": 80,
+      "rss": 90152960
+    }
+  ],
+  "before_gc_rss": 90152960,
+  "after_gc_rss": 90152960
+}

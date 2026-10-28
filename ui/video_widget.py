@@ -11,6 +11,7 @@ class VideoWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._pixmap = None
+        self._regions = []
         self._placeholder = "Configurá la cámara para ver el video"
         self.setMinimumSize(720, 405)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -30,6 +31,11 @@ class VideoWidget(QWidget):
 
     def limpiar(self):
         self._pixmap = None
+        self._regions = []
+        self.update()
+
+    def mostrar_regiones(self, regions):
+        self._regions = regions
         self.update()
 
     def tiene_imagen(self) -> bool:
@@ -67,3 +73,10 @@ class VideoWidget(QWidget):
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRect(rx, ry, rw, rh)
+        for region in self._regions:
+            x1, y1, x2, y2 = region['box']
+            sx, sy = dest.width()/self._pixmap.width(), dest.height()/self._pixmap.height()
+            x, y = int(dest.x()+x1*sx), int(dest.y()+y1*sy)
+            painter.setPen(QPen(QColor('#F9E2AF'), 2, Qt.PenStyle.DashLine))
+            painter.drawRect(x, y, int((x2-x1)*sx), int((y2-y1)*sy))
+            painter.drawText(x, max(dest.y()+12,y-4), 'Texto candidato' + (' estable' if region.get('stable') else ''))

@@ -1,0 +1,25 @@
+{
+  "kind": "isolated_offscreen_preview_conversion_and_paint_no_ocr",
+  "shape": [
+    1520,
+    2688,
+    3
+  ],
+  "preview_shape": [
+    540,
+    955,
+    3
+  ],
+  "timing_ms": {
+    "native": {
+      "n": 80,
+      "median": 13.989449944347143,
+      "p95": 24.98821481131017
+    },
+    "fit_preview": {
+      "n": 80,
+      "median": 26.74859995022416,
+      "p95": 34.34056504629552
+    }
+  }
+}

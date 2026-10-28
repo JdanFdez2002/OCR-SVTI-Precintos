@@ -1,0 +1,13 @@
+{
+  "kind": "read_only_rtsp_probe_no_http_no_ptz_no_saved_camera_images",
+  "configured": true,
+  "received_frames": 167,
+  "status": "fresh_frames_received",
+  "last_shape": [
+    1520,
+    2688,
+    3
+  ],
+  "duration_s": 8.015999999828637,
+  "max_sample_age_s": 0.06300000008195639
+}

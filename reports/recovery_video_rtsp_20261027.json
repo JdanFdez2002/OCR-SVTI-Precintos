@@ -1,0 +1,42 @@
+{
+  "kind": "qt_offscreen_live_rtsp_real_model_no_ptz",
+  "photo_sha256": null,
+  "source_shape": [
+    1520,
+    2688,
+    3
+  ],
+  "before": {
+    "mode": "previous_workload_reenabled",
+    "duration_s": 10.010149800218642,
+    "cpu_s": 12.265625,
+    "mean_cpu_one_core_percent": 122.53188258713266,
+    "rss_sampled_bytes": 742236160,
+    "ticks": 165,
+    "timer_interval_median_ms": 48.341999761760235,
+    "timer_interval_p95_ms": 66.17912976071237,
+    "intervals_over_66ms": 9,
+    "tick_processing_p95_ms": 39.85983971506356,
+    "conversions": 165,
+    "video_jobs": 33,
+    "detector_calls": 5,
+    "ocr_calls": 0
+  },
+  "after": {
+    "mode": "recovered_defaults",
+    "duration_s": 10.005170300602913,
+    "cpu_s": 4.9375,
+    "mean_cpu_one_core_percent": 49.34948483288151,
+    "rss_sampled_bytes": 742834176,
+    "ticks": 208,
+    "timer_interval_median_ms": 48.06880000978708,
+    "timer_interval_p95_ms": 55.32951988279819,
+    "intervals_over_66ms": 3,
+    "tick_processing_p95_ms": 32.329709641635375,
+    "conversions": 201,
+    "video_jobs": 0,
+    "detector_calls": 0,
+    "ocr_calls": 0
+  },
+  "limitation": "Previous workload is reenabled in current UI. Qt offscreen; no Windows monitor rendering or PTZ/focus validation. Sequential phases, not randomized."
+}
