@@ -898,7 +898,7 @@ class MainWindow(QMainWindow):
 
     def _on_ocr_listo(self):
         self._ocr_listo = True
-        self._lbl_ocr_motor.setText("Motor OCR: listo")
+        self._lbl_ocr_motor.setText("OCR: no implementado")
         self._actualizar_captura()
 
     def _on_ocr_fallo_motor(self, mensaje: str):

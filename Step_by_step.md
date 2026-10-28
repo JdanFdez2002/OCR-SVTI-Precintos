@@ -5,23 +5,14 @@ Activar en entorno virtual:
 - .\venv\Scripts\activate
 
 Puedes instalar todo utilizando este comando:
-- python -m pip install --upgrade pip setuptools wheel; pip install paddlepaddle==2.6.2 paddleocr==2.7.3 pillow numpy==1.26.4 opencv-python==4.6.0.66 python-dotenv openpyxl
+- python -m pip install --upgrade pip setuptools wheel; pip install -r requirements.txt
 
 
 o en su defecto uno por uno:
 Actualizar herramientas de instalación:
-- pip install paddlepaddle==2.6.2
-- pip install paddleocr==2.7.3
-- pip install pillow
-- pip install numpy==1.26.4
-- pip install opencv-python==4.6.0.66
-- pip install dotenv
-- pip install openpyxl
+- pip install -r requirements.txt
 
 Verificar con:
-- pip list | findstr "numpy opencv paddle"
+- pip list | findstr "numpy opencv PySide6 openpyxl requests"
 
-numpy                    1.26.4
-opencv-python            4.6.0.66
-paddleocr                2.7.3
-paddlepaddle             2.6.2
+El reconocimiento OCR está desactivado temporalmente y no instala PaddleOCR.
