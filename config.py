@@ -11,6 +11,8 @@ ALTO_RETICULA_PCT = 0.20
 
 RAIZ_PROYECTO = Path(__file__).resolve().parent
 CARPETA_CAPTURAS = RAIZ_PROYECTO / "capturas_precintos"
+ARCHIVO_REGISTRO_LECTURAS = RAIZ_PROYECTO / "registro_lecturas.sqlite3"
+ARCHIVO_REPORTE_LECTURAS = RAIZ_PROYECTO / "reporte_lecturas.xlsx"
 
 # El canal 101 queda reservado para fotografías de alta resolución/OCR.
 # Sondeo de solo lectura realizado sobre la cámara configurada:

@@ -17,6 +17,7 @@ from modulos.excel_manifest import RegistroEsperado
 from modulos.ocr_analysis import AnalysisResult, Candidate, Detection
 from modulos.ocr_worker import OcrWorker
 from modulos.ptz_worker import PtzWorker
+from modulos.reading_log import ReadingLogStore
 from ui.main_window import MainWindow
 from motor import MotorWindow
 from modulos.ocr_reader import RecognitionResult
@@ -30,8 +31,16 @@ class UiSafetyTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
+        self._registro_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._registro_tmp.cleanup)
         self.patches = [patch.object(OcrWorker,'start'), patch.object(PtzWorker,'start'),
-                        patch.object(MainWindow,'_inicio')]
+                        patch.object(MainWindow,'_inicio'),
+                        patch(
+                            'ui.main_window.ReadingLogStore',
+                            side_effect=lambda: ReadingLogStore(
+                                Path(self._registro_tmp.name) / 'registro.sqlite3'
+                            ),
+                        )]
         for p in self.patches:
             p.start()
             self.addCleanup(p.stop)
@@ -307,6 +316,60 @@ class UiSafetyTests(unittest.TestCase):
             w._on_ocr_analisis(packet)
         self.assertEqual(w._txt_ocr.toPlainText(),'B 0097312')
         self.assertIn('94.0',w._lbl_confianza.text())
+
+    def test_ocr_result_is_added_to_persistent_reading_log(self):
+        w = self.window
+        w._generation,w._video_epoch = 3,2
+        w._service = Mock()
+        analysis = RecognitionResult(
+            'fixture',
+            'full_photo',
+            status='texto_reconocido',
+            recognized_text='ASDASD',
+            suggested_text='ASDASD',
+            confidence=.95,
+            selection_score=.92,
+            selected_variant='fixture',
+        )
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch('ui.main_window.asegurar_carpeta_capturas', return_value=Path(tmp)):
+            photo = Path(tmp) / 'lectura_input.png'
+            photo.write_bytes(b'fixture')
+            report = Path(tmp) / 'lectura_ocr.json'
+            packet = dict(
+                analysis=analysis,
+                context=dict(
+                    generation=3,
+                    stream_epoch=2,
+                    evidence=dict(full_image=str(photo), input_sha256='fixture-sha'),
+                    report=str(report),
+                ),
+            )
+            w._on_ocr_analisis(packet)
+
+        entries = w._registro_lecturas.listar_filas()
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].first.codigo, 'ASDASD')
+        self.assertEqual(entries[0].first.foto_path, str(photo))
+        self.assertEqual(entries[0].first.input_sha256, 'fixture-sha')
+
+    def test_ui_desechar_y_recuperar_mueve_la_relacion_completa(self):
+        w = self.window
+        first_id = w._registro_lecturas.agregar_lectura(codigo='ASDASD')
+        second_id = w._registro_lecturas.agregar_lectura(codigo='ASJDJAD')
+        relation_id = w._registro_lecturas.relacionar(first_id, second_id)
+        w._refrescar_registro_lecturas()
+
+        with patch.object(w, '_filas_seleccionadas', return_value=[0]):
+            w._desechar_lecturas()
+        self.assertEqual(w._tabla_lecturas.rowCount(), 0)
+        self.assertEqual(w._tabla_desechadas.rowCount(), 1)
+        self.assertEqual(w._registro_desechadas_filas[0].relation_id, relation_id)
+
+        with patch.object(w, '_filas_seleccionadas', return_value=[0]):
+            w._recuperar_desechadas()
+        self.assertEqual(w._tabla_lecturas.rowCount(), 1)
+        self.assertEqual(w._tabla_desechadas.rowCount(), 0)
 
 
 if __name__=='__main__':

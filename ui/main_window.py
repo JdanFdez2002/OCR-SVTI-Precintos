@@ -12,6 +12,7 @@ import threading
 import json
 import time
 from datetime import date, datetime
+from pathlib import Path
 
 import cv2
 from PySide6.QtCore import QDate, QEvent, Qt, QTimer, Signal
@@ -54,12 +55,14 @@ from config import (
     DETECCION_EN_VIVO,
     VEL_MOV_MAX,
     VEL_MOV_MIN,
+    ARCHIVO_REPORTE_LECTURAS,
 )
 from modulos.camera_service import CameraService
 from modulos.excel_manifest import RegistroEsperado, cargar_excel
 from modulos.ocr_worker import OcrWorker
 from modulos.identifier_policy import append_decision, decide_arrival, normalize_identifier
 from modulos.ptz_worker import PtzWorker
+from modulos.reading_log import ReadingLogStore
 from modulos.settings_store import (
     load_camera_settings,
     save_camera_settings,
@@ -134,6 +137,9 @@ class MainWindow(QMainWindow):
 
         self._cfg = load_camera_settings()
         self._canal_activo = CANAL_RTSP_VIDEO
+        self._registro_lecturas = ReadingLogStore()
+        self._registro_filas = []
+        self._registro_desechadas_filas = []
         self._service: CameraService | None = None
         self._rtsp_thread: threading.Thread | None = None
         self._vel_mov = 50
@@ -334,6 +340,70 @@ class MainWindow(QMainWindow):
         lay_excel.addWidget(self._lbl_excel_estado)
         lay_excel.addWidget(self._tabla_excel)
 
+        self._btn_relacionar_lecturas = QPushButton("Relacionar 2 seleccionadas")
+        self._btn_relacionar_lecturas.clicked.connect(self._relacionar_lecturas)
+        self._btn_separar_lectura = QPushButton("Separar relación")
+        self._btn_separar_lectura.clicked.connect(self._separar_lectura)
+        self._btn_desechar_lecturas = QPushButton("Desechar seleccionadas")
+        self._btn_desechar_lecturas.clicked.connect(self._desechar_lecturas)
+        self._btn_exportar_lecturas = QPushButton("Exportar registro Excel")
+        self._btn_exportar_lecturas.clicked.connect(self._exportar_registro_lecturas)
+        self._btn_mostrar_desechadas = QPushButton("Mostrar desechados")
+        self._btn_mostrar_desechadas.setCheckable(True)
+        self._btn_mostrar_desechadas.toggled.connect(self._alternar_desechados)
+        self._lbl_registro_estado = QLabel("Registro persistente")
+        encabezados_lecturas = [
+            "Relación",
+            "Código 1",
+            "Foto 1",
+            "Fecha 1",
+            "Conf. 1",
+            "Código 2",
+            "Foto 2",
+            "Fecha 2",
+            "Conf. 2",
+        ]
+        self._tabla_lecturas = QTableWidget(0, 9)
+        self._tabla_lecturas.setHorizontalHeaderLabels(encabezados_lecturas)
+        self._tabla_lecturas.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._tabla_lecturas.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self._tabla_lecturas.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._tabla_lecturas.verticalHeader().setVisible(False)
+        self._tabla_lecturas.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self._tabla_lecturas.setMinimumHeight(220)
+
+        self._tabla_desechadas = QTableWidget(0, 9)
+        self._tabla_desechadas.setHorizontalHeaderLabels(encabezados_lecturas)
+        self._tabla_desechadas.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self._tabla_desechadas.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self._tabla_desechadas.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._tabla_desechadas.verticalHeader().setVisible(False)
+        self._tabla_desechadas.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self._tabla_desechadas.setMinimumHeight(160)
+        self._btn_recuperar_desechadas = QPushButton("Recuperar seleccionadas")
+        self._btn_recuperar_desechadas.clicked.connect(self._recuperar_desechadas)
+
+        caja_lecturas = QGroupBox("Registro persistente de lecturas")
+        lay_lecturas = QVBoxLayout(caja_lecturas)
+        botones_lecturas_1 = QHBoxLayout()
+        botones_lecturas_1.addWidget(self._btn_relacionar_lecturas)
+        botones_lecturas_1.addWidget(self._btn_separar_lectura)
+        botones_lecturas_1.addWidget(self._btn_desechar_lecturas)
+        lay_lecturas.addLayout(botones_lecturas_1)
+        botones_lecturas_2 = QHBoxLayout()
+        botones_lecturas_2.addWidget(self._btn_exportar_lecturas)
+        botones_lecturas_2.addWidget(self._btn_mostrar_desechadas)
+        lay_lecturas.addLayout(botones_lecturas_2)
+        lay_lecturas.addWidget(self._lbl_registro_estado)
+        lay_lecturas.addWidget(self._tabla_lecturas)
+
+        self._caja_desechadas = QGroupBox("Registros desechados")
+        lay_desechadas = QVBoxLayout(self._caja_desechadas)
+        lay_desechadas.addWidget(self._btn_recuperar_desechadas)
+        lay_desechadas.addWidget(self._tabla_desechadas)
+        self._caja_desechadas.setVisible(False)
+        lay_lecturas.addWidget(self._caja_desechadas)
+
         lateral = QWidget()
         lateral.setFixedWidth(340)
         lay_lat = QVBoxLayout(lateral)
@@ -360,9 +430,11 @@ class MainWindow(QMainWindow):
         lay_video.setContentsMargins(0, 0, 0, 0)
         lay_video.addWidget(self._video, 3)
         lay_video.addWidget(caja_excel, 1)
+        lay_video.addWidget(caja_lecturas, 2)
         lay.addWidget(panel_video, 1)
         lay.addWidget(scroll_lateral)
         self.setCentralWidget(central)
+        self._refrescar_registro_lecturas()
 
     def _cargar_excel(self):
         rutas, _ = QFileDialog.getOpenFileNames(
@@ -586,6 +658,189 @@ class MainWindow(QMainWindow):
             self._llenar_tabla_excel()
             self._tabla_excel.selectRow(decision.row)
         return decision.reason
+
+    @staticmethod
+    def _texto_fecha_lectura(reading) -> str:
+        return reading.created_at.replace("T", " ")[:19] if reading is not None else ""
+
+    @staticmethod
+    def _nombre_archivo_lectura(path: str) -> str:
+        return Path(path).name if path else "sin foto"
+
+    def _llenar_tabla_registro(self, tabla, entradas):
+        tabla.setRowCount(len(entradas))
+        for fila, entry in enumerate(entradas):
+            first, second = entry.first, entry.second
+            valores = [
+                f"#{entry.relation_id}" if entry.relation_id is not None else "Sin relacionar",
+                first.codigo or "(sin texto)",
+                self._nombre_archivo_lectura(first.foto_path),
+                self._texto_fecha_lectura(first),
+                f"{first.confianza * 100:.1f} %",
+                second.codigo if second is not None and second.codigo else ("(sin texto)" if second else ""),
+                self._nombre_archivo_lectura(second.foto_path) if second is not None else "",
+                self._texto_fecha_lectura(second),
+                f"{second.confianza * 100:.1f} %" if second is not None else "",
+            ]
+            for columna, valor in enumerate(valores):
+                item = QTableWidgetItem(str(valor))
+                item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+                if columna == 1:
+                    item.setToolTip(first.texto_observado or first.codigo)
+                elif columna == 5 and second is not None:
+                    item.setToolTip(second.texto_observado or second.codigo)
+                tabla.setItem(fila, columna, item)
+
+    def _refrescar_registro_lecturas(self):
+        todas = self._registro_lecturas.listar_filas(include_discarded=True)
+        entradas = [entry for entry in todas if not entry.desechado]
+        desechadas = [entry for entry in todas if entry.desechado]
+        self._registro_filas = entradas
+        self._registro_desechadas_filas = desechadas
+        self._llenar_tabla_registro(self._tabla_lecturas, entradas)
+        self._llenar_tabla_registro(self._tabla_desechadas, desechadas)
+        self._btn_mostrar_desechadas.setText(
+            f"Ocultar desechados ({len(desechadas)})"
+            if self._btn_mostrar_desechadas.isChecked()
+            else f"Mostrar desechados ({len(desechadas)})"
+        )
+        self._lbl_registro_estado.setText(
+            f"{len(entradas)} filas activas · {self._registro_lecturas.total_lecturas()} lecturas guardadas"
+        )
+
+    @staticmethod
+    def _filas_seleccionadas(tabla):
+        return sorted({index.row() for index in tabla.selectedIndexes()})
+
+    def _alternar_desechados(self, mostrar: bool):
+        self._caja_desechadas.setVisible(mostrar)
+        self._btn_mostrar_desechadas.setText(
+            f"Ocultar desechados ({len(self._registro_desechadas_filas)})"
+            if mostrar
+            else f"Mostrar desechados ({len(self._registro_desechadas_filas)})"
+        )
+
+    def _desechar_lecturas(self):
+        filas = self._filas_seleccionadas(self._tabla_lecturas)
+        if not filas:
+            QMessageBox.information(
+                self,
+                "Desechar lecturas",
+                "Selecciona al menos una fila para apartarla como desechada.",
+            )
+            return
+        for fila in filas:
+            entry = self._registro_filas[fila]
+            self._registro_lecturas.cambiar_desechado(
+                reading_id=entry.first.id,
+                relation_id=entry.relation_id,
+                discarded=True,
+            )
+        self._refrescar_registro_lecturas()
+
+    def _recuperar_desechadas(self):
+        filas = self._filas_seleccionadas(self._tabla_desechadas)
+        if not filas:
+            QMessageBox.information(
+                self,
+                "Recuperar lecturas",
+                "Selecciona al menos una fila desechada para recuperarla.",
+            )
+            return
+        for fila in filas:
+            entry = self._registro_desechadas_filas[fila]
+            self._registro_lecturas.cambiar_desechado(
+                reading_id=entry.first.id,
+                relation_id=entry.relation_id,
+                discarded=False,
+            )
+        self._refrescar_registro_lecturas()
+
+    def _registrar_lectura_ocr(self, analysis, context, selected_text, confidence, score, variante):
+        evidence = context.get("evidence") or {}
+        raw_text = (
+            getattr(analysis, "recognized_text", "")
+            or getattr(analysis, "suggested_text", "")
+            or selected_text
+        )
+        self._registro_lecturas.agregar_lectura(
+            codigo=selected_text,
+            texto_observado=raw_text,
+            estado=getattr(analysis, "status", ""),
+            confianza=confidence,
+            score=score,
+            metodo=variante,
+            foto_path=evidence.get("full_image", ""),
+            reporte_path=context.get("report", ""),
+            input_sha256=evidence.get("input_sha256", ""),
+        )
+        self._refrescar_registro_lecturas()
+
+    def _relacionar_lecturas(self):
+        filas = sorted({index.row() for index in self._tabla_lecturas.selectedIndexes()})
+        if len(filas) != 2:
+            QMessageBox.information(
+                self,
+                "Relacionar lecturas",
+                "Selecciona exactamente dos filas sin relacionar.",
+            )
+            return
+        entradas = [self._registro_filas[fila] for fila in filas]
+        if any(entry.relation_id is not None or entry.second is not None for entry in entradas):
+            QMessageBox.warning(
+                self,
+                "Relacionar lecturas",
+                "Solo se pueden relacionar dos filas que aun esten sin relacionar.",
+            )
+            return
+        try:
+            self._registro_lecturas.relacionar(
+                entradas[0].first.id,
+                entradas[1].first.id,
+            )
+        except ValueError as exc:
+            QMessageBox.warning(self, "Relacionar lecturas", str(exc))
+            return
+        self._refrescar_registro_lecturas()
+
+    def _separar_lectura(self):
+        filas = sorted({index.row() for index in self._tabla_lecturas.selectedIndexes()})
+        if len(filas) != 1:
+            QMessageBox.information(
+                self,
+                "Separar relacion",
+                "Selecciona una sola fila relacionada.",
+            )
+            return
+        entry = self._registro_filas[filas[0]]
+        if entry.relation_id is None:
+            QMessageBox.information(self, "Separar relacion", "La fila ya esta sin relacionar.")
+            return
+        self._registro_lecturas.separar(entry.relation_id)
+        self._refrescar_registro_lecturas()
+
+    def _exportar_registro_lecturas(self):
+        if self._registro_lecturas.total_lecturas() == 0:
+            QMessageBox.information(
+                self,
+                "Exportar registro",
+                "Todavia no hay lecturas guardadas para exportar.",
+            )
+            return
+        ruta, _ = QFileDialog.getSaveFileName(
+            self,
+            "Exportar registro de lecturas",
+            str(ARCHIVO_REPORTE_LECTURAS),
+            "Archivos Excel (*.xlsx)",
+        )
+        if not ruta:
+            return
+        try:
+            destino = self._registro_lecturas.exportar_excel(ruta)
+        except Exception as exc:
+            QMessageBox.critical(self, "Exportar registro", f"No se pudo crear el Excel:\n{exc}")
+            return
+        QMessageBox.information(self, "Exportar registro", f"Registro exportado en:\n{destino}")
 
     def _vincular_ptz(self, boton: HoldButton, pan=None, tilt=None, zoom=None, focus=None):
         def start():
@@ -944,6 +1199,10 @@ class MainWindow(QMainWindow):
         conf = getattr(analysis,'confidence',best.confidence_min if best else 0.)
         score = getattr(analysis,'selection_score',best.score if best else conf)
         variante = getattr(analysis,'selected_variant',None) or (', '.join(dict.fromkeys(d.variant for d in best.detections)) if best else 'ninguno')
+        try:
+            self._registrar_lectura_ocr(analysis, context, selected_text, conf, score, variante)
+        except Exception as exc:
+            self._lbl_registro_estado.setText(f"Registro: error al guardar ({exc})")
         self._lbl_ocr_estado.setText(f'{analysis.status}: {analysis.reason}')
         self._lbl_comparacion.setText('Comparación: '+decision if self._manifiesto else
                                       'Comparación: sin manifiesto; lectura visual independiente')
