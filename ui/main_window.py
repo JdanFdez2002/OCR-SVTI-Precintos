@@ -44,13 +44,16 @@ from PySide6.QtWidgets import (
 )
 
 from config import (
-    CANAL_RTSP_DEFAULT,
-    CANAL_RTSP_MEDIO,
+    CANAL_RTSP_FOTO,
+    CANAL_RTSP_VIDEO,
     VEL_FOCO,
+    VEL_ZOOM,
     asegurar_carpeta_capturas,
     REGION_MAX_AGE_S,
     SEGUIMIENTO_INTERVALO_S,
     DETECCION_EN_VIVO,
+    VEL_MOV_MAX,
+    VEL_MOV_MIN,
 )
 from modulos.camera_service import CameraService
 from modulos.excel_manifest import RegistroEsperado, cargar_excel
@@ -130,10 +133,12 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(APP_STYLESHEET)
 
         self._cfg = load_camera_settings()
-        self._canal_activo = self._cfg.canal
+        self._canal_activo = CANAL_RTSP_VIDEO
         self._service: CameraService | None = None
         self._rtsp_thread: threading.Thread | None = None
         self._vel_mov = 50
+        self._vel_zoom = VEL_ZOOM
+        self._vel_foco = VEL_FOCO
         self._ocr_listo = False
         self._ocr_ocupado = False
         self._captura_thread: threading.Thread | None = None
@@ -151,7 +156,7 @@ class MainWindow(QMainWindow):
 
         self._ptz = PtzWorker(self)
         self._ptz.error.connect(self._on_ptz_error)
-        self._ptz.focus_status.connect(lambda text: self._lbl_foco.setText(text))
+        self._ptz.focus_status.connect(self._on_focus_status)
         self._ptz.configuration_status.connect(lambda text: self._set_estado(text, '#F9E2AF'))
         self._ptz.start()
 
@@ -187,9 +192,8 @@ class MainWindow(QMainWindow):
         self._lbl_estado = QLabel("Sin conexión")
         self._lbl_estado.setObjectName("estado")
         self._lbl_canal = QLabel(self._texto_canal())
+        self._lbl_canal.setWordWrap(True)
         self._lbl_ocr_motor = QLabel("Motor OCR: cargando…")
-        self._lbl_foco = QLabel('Enfoque nativo: pendiente de capacidades ISAPI')
-        self._lbl_foco.setWordWrap(True)
 
         self._btn_config = QPushButton("Configurar cámara")
         self._btn_config.clicked.connect(self._abrir_config)
@@ -207,7 +211,6 @@ class MainWindow(QMainWindow):
         lay_cam = QVBoxLayout(caja_cam)
         lay_cam.addWidget(self._lbl_estado)
         lay_cam.addWidget(self._lbl_canal)
-        lay_cam.addWidget(self._lbl_foco)
         lay_cam.addWidget(self._btn_config)
         lay_cam.addWidget(self._btn_conectar)
         lay_modo = QHBoxLayout()
@@ -241,10 +244,10 @@ class MainWindow(QMainWindow):
         self._btn_zoom_out = HoldButton("Zoom −")
         self._btn_foco_cerca = HoldButton("Foco cerca")
         self._btn_foco_lejos = HoldButton("Foco lejos")
-        self._vincular_ptz(self._btn_zoom_in, zoom=lambda: self._vel_mov)
-        self._vincular_ptz(self._btn_zoom_out, zoom=lambda: -self._vel_mov)
-        self._vincular_ptz(self._btn_foco_cerca, focus=lambda: VEL_FOCO)
-        self._vincular_ptz(self._btn_foco_lejos, focus=lambda: -VEL_FOCO)
+        self._vincular_ptz(self._btn_zoom_in, zoom=lambda: self._vel_zoom)
+        self._vincular_ptz(self._btn_zoom_out, zoom=lambda: -self._vel_zoom)
+        self._vincular_ptz(self._btn_foco_cerca, focus=lambda: self._vel_foco)
+        self._vincular_ptz(self._btn_foco_lejos, focus=lambda: -self._vel_foco)
 
         caja_lente = QGroupBox("Zoom y foco")
         lay_lente = QGridLayout(caja_lente)
@@ -253,15 +256,17 @@ class MainWindow(QMainWindow):
         lay_lente.addWidget(self._btn_foco_cerca, 1, 0)
         lay_lente.addWidget(self._btn_foco_lejos, 1, 1)
 
-        self._slider_vel = QSlider(Qt.Orientation.Horizontal)
-        self._slider_vel.setRange(10, 100)
-        self._slider_vel.setValue(self._vel_mov)
-        self._slider_vel.valueChanged.connect(self._on_vel)
-        self._lbl_vel = QLabel(f"Velocidad: {self._vel_mov}")
-        caja_vel = QGroupBox("Velocidad")
+        self._slider_vel_mov = QSlider(Qt.Orientation.Horizontal)
+        self._slider_vel_mov.setRange(VEL_MOV_MIN, VEL_MOV_MAX)
+        self._slider_vel_mov.setValue(self._vel_mov)
+        self._slider_vel_mov.valueChanged.connect(self._on_vel_mov)
+        self._lbl_vel_mov = QLabel(f"Giro de camara: {self._vel_mov}")
+
+        caja_vel = QGroupBox("Velocidad de giro")
         lay_vel = QVBoxLayout(caja_vel)
-        lay_vel.addWidget(self._lbl_vel)
-        lay_vel.addWidget(self._slider_vel)
+        lay_vel.addWidget(self._lbl_vel_mov)
+        lay_vel.addWidget(self._slider_vel_mov)
+        lay_vel.addWidget(QLabel(f"Zoom fijo: {self._vel_zoom} · Foco manual fijo: {self._vel_foco}"))
 
         self._btn_capturar = QPushButton("Capturar precinto")
         self._btn_capturar.setObjectName("primario")
@@ -292,7 +297,7 @@ class MainWindow(QMainWindow):
 
         ayuda = QLabel(
             "Atajos: WASD mover · I/K zoom · J/L foco · "
-            "Espacio detener · P capturar · Tab cambiar resolución"
+            "Espacio detener · P capturar"
         )
         ayuda.setWordWrap(True)
         ayuda.setStyleSheet("color: #A6ADC8; font-weight: 400;")
@@ -595,26 +600,43 @@ class MainWindow(QMainWindow):
         boton.motion_stop.connect(self._detener_ptz)
 
     def _atajos(self):
-        QShortcut(QKeySequence("1"), self).activated.connect(lambda: self._slider_vel.setValue(20))
-        QShortcut(QKeySequence("2"), self).activated.connect(lambda: self._slider_vel.setValue(50))
-        QShortcut(QKeySequence("3"), self).activated.connect(lambda: self._slider_vel.setValue(100))
+        QShortcut(QKeySequence("1"), self).activated.connect(lambda: self._slider_vel_mov.setValue(20))
+        QShortcut(QKeySequence("2"), self).activated.connect(lambda: self._slider_vel_mov.setValue(50))
+        QShortcut(QKeySequence("3"), self).activated.connect(lambda: self._slider_vel_mov.setValue(100))
+
+    def _valores_ptz_tecla(self, key: int):
+        return {
+            Qt.Key.Key_W: (0, self._vel_mov, 0, 0),
+            Qt.Key.Key_S: (0, -self._vel_mov, 0, 0),
+            Qt.Key.Key_A: (-self._vel_mov, 0, 0, 0),
+            Qt.Key.Key_D: (self._vel_mov, 0, 0, 0),
+            Qt.Key.Key_I: (0, 0, self._vel_zoom, 0),
+            Qt.Key.Key_K: (0, 0, -self._vel_zoom, 0),
+            Qt.Key.Key_J: (0, 0, 0, self._vel_foco),
+            Qt.Key.Key_L: (0, 0, 0, -self._vel_foco),
+        }.get(key)
 
     def _comando_tecla(self, key: int):
-        mapa = {
-            Qt.Key.Key_W: lambda: self._enviar_ptz(tilt=self._vel_mov),
-            Qt.Key.Key_S: lambda: self._enviar_ptz(tilt=-self._vel_mov),
-            Qt.Key.Key_A: lambda: self._enviar_ptz(pan=-self._vel_mov),
-            Qt.Key.Key_D: lambda: self._enviar_ptz(pan=self._vel_mov),
-            Qt.Key.Key_I: lambda: self._enviar_ptz(zoom=self._vel_mov),
-            Qt.Key.Key_K: lambda: self._enviar_ptz(zoom=-self._vel_mov),
-            Qt.Key.Key_J: lambda: self._enviar_ptz(focus=VEL_FOCO),
-            Qt.Key.Key_L: lambda: self._enviar_ptz(focus=-VEL_FOCO),
-        }
-        fn = mapa.get(key)
-        if fn is None:
+        valores = self._valores_ptz_tecla(key)
+        if valores is None:
             return False
-        fn()
+        self._enviar_ptz(*valores)
         return True
+
+    def _enviar_ptz_mantenido(self):
+        pan = tilt = zoom = focus = 0
+        for key in self._held_ptz:
+            valores = self._valores_ptz_tecla(key)
+            if valores is None:
+                continue
+            pan += valores[0]
+            tilt += valores[1]
+            zoom += valores[2]
+            focus += valores[3]
+        if any((pan, tilt, zoom, focus)):
+            self._enviar_ptz(pan=pan, tilt=tilt, zoom=zoom, focus=focus)
+        else:
+            self._detener_ptz()
 
     def _atajos_globales_activos(self) -> bool:
         if QApplication.activeModalWidget() is not None:
@@ -623,40 +645,37 @@ class MainWindow(QMainWindow):
         return not isinstance(foco, (QLineEdit, QTextEdit, QAbstractSpinBox))
 
     def eventFilter(self, watched, event):
+        teclas_ptz = (
+            Qt.Key.Key_W, Qt.Key.Key_S, Qt.Key.Key_A, Qt.Key.Key_D,
+            Qt.Key.Key_I, Qt.Key.Key_K, Qt.Key.Key_J, Qt.Key.Key_L,
+        )
         if event.type() == QEvent.Type.ApplicationDeactivate:
             self._held_ptz.clear()
             self._detener_ptz()
         # Una liberación debe parar incluso si el foco cambió a un campo/modal.
         if (isinstance(event, QKeyEvent) and event.type() == QEvent.Type.KeyRelease
-                and event.key() in self._held_ptz and not event.isAutoRepeat()):
+                and event.key() in teclas_ptz and not event.isAutoRepeat()):
+            estaba_mantenida = event.key() in self._held_ptz
             self._held_ptz.discard(event.key())
-            self._detener_ptz()
+            if estaba_mantenida:
+                self._enviar_ptz_mantenido()
             return True
         if isinstance(event, QKeyEvent) and self._atajos_globales_activos():
-            teclas_ptz = (
-                Qt.Key.Key_W, Qt.Key.Key_S, Qt.Key.Key_A, Qt.Key.Key_D,
-                Qt.Key.Key_I, Qt.Key.Key_K, Qt.Key.Key_J, Qt.Key.Key_L,
-            )
             if event.isAutoRepeat() and event.key() in teclas_ptz + (
-                Qt.Key.Key_Space, Qt.Key.Key_P, Qt.Key.Key_Tab
+                Qt.Key.Key_Space, Qt.Key.Key_P
             ):
                 return True
             if event.type() == QEvent.Type.KeyPress:
-                if event.key() == Qt.Key.Key_Tab:
-                    self._alternar_canal()
-                    return True
                 if event.key() == Qt.Key.Key_Space:
                     self._detener_ptz()
                     return True
                 if event.key() == Qt.Key.Key_P:
                     self._capturar()
                     return True
-                if self._comando_tecla(event.key()):
+                if event.key() in teclas_ptz:
                     self._held_ptz.add(event.key())
+                    self._enviar_ptz_mantenido()
                     return True
-            elif event.type() == QEvent.Type.KeyRelease and event.key() in teclas_ptz:
-                self._detener_ptz()
-                return True
         return super().eventFilter(watched, event)
 
     def _inicio(self):
@@ -678,7 +697,7 @@ class MainWindow(QMainWindow):
             return
         save_camera_settings(nuevo)
         self._cfg = nuevo
-        self._canal_activo = nuevo.canal
+        self._canal_activo = CANAL_RTSP_VIDEO
         self._lbl_canal.setText(self._texto_canal())
         if self._service is not None:
             self._conectar()
@@ -701,21 +720,10 @@ class MainWindow(QMainWindow):
         self._set_estado('Solicitando modo cámara…', '#F9E2AF')
 
     def _texto_canal(self) -> str:
-        tipo = "media" if self._canal_activo == CANAL_RTSP_MEDIO else "alta"
-        return f"Resolución: {tipo} (canal {self._canal_activo})"
-
-    def _alternar_canal(self):
-        if not settings_completos(self._cfg):
-            return
-        canal_principal = self._cfg.canal
-        self._canal_activo = (
-            canal_principal
-            if self._canal_activo == CANAL_RTSP_MEDIO
-            else CANAL_RTSP_MEDIO
+        return (
+            f"Video/PTZ: baja resolución (canal {CANAL_RTSP_VIDEO}) · "
+            f"Fotos OCR: alta resolución (canal {CANAL_RTSP_FOTO})"
         )
-        self._lbl_canal.setText(self._texto_canal())
-        if self._service is not None:
-            self._conectar()
 
     def _conectar(self):
         if self._closing:
@@ -724,10 +732,14 @@ class MainWindow(QMainWindow):
             self._abrir_config()
             return
         self._desconectar()
-        self._service = CameraService(self._cfg.usuario, self._cfg.password)
+        self._service = CameraService(
+            self._cfg.usuario,
+            self._cfg.password,
+            allow_focus_auto_fallback=True,
+        )
         self._ptz.configurar(self._service, self._cfg.ip)
         url = CameraService.url_rtsp(
-            self._cfg.usuario, self._cfg.password, self._cfg.ip, self._canal_activo
+            self._cfg.usuario, self._cfg.password, self._cfg.ip, CANAL_RTSP_VIDEO
         )
         self._rtsp_thread = self._service.iniciar_lectura(url)
         self._btn_conectar.setText("Desconectar")
@@ -818,9 +830,9 @@ class MainWindow(QMainWindow):
                 and time.monotonic()-context['captured_at'] <= REGION_MAX_AGE_S and not self._ocr_ocupado):
             self._lbl_ocr_estado.setText('Candidato en video (requiere captura): ' + (analysis.suggested_text or 'sin lectura'))
 
-    def _on_vel(self, valor: int):
+    def _on_vel_mov(self, valor: int):
         self._vel_mov = valor
-        self._lbl_vel.setText(f"Velocidad: {valor}")
+        self._lbl_vel_mov.setText(f"Giro de camara: {valor}")
 
     def _enviar_ptz(self, pan=0, tilt=0, zoom=0, focus=0):
         if self._service is None:
@@ -833,6 +845,17 @@ class MainWindow(QMainWindow):
             return
         self._ptz.enviar(0, 0, 0, 0, 0)
 
+    def _on_focus_status(self, mensaje: str):
+        # Mantiene la UI compacta; el diagnóstico completo queda disponible
+        # como tooltip del estado de conexión.
+        self._lbl_estado.setToolTip(mensaje)
+        if 'solicitado' in mensaje.lower():
+            self._set_estado('Autofoco solicitado', '#A6E3A1')
+        elif 'cancelado' in mensaje.lower():
+            self._set_estado('Autofoco cancelado', '#F9E2AF')
+        else:
+            self._set_estado('Autofoco no confirmado', '#F9E2AF')
+
     def _on_ptz_error(self, mensaje: str):
         self._set_estado(f"PTZ: {mensaje}", "#F38BA8")
 
@@ -841,18 +864,13 @@ class MainWindow(QMainWindow):
             return
         self._ocr_ocupado = True
         self._actualizar_captura()
-        if self._canal_activo == CANAL_RTSP_DEFAULT:
-            sample = self._service.copiar_muestra()
-            if sample is not None:
-                self._procesar_captura_alta(self._generation,dict(frame=sample[0],stream_epoch=sample[3]))
-                return
         self._lbl_ocr_estado.setText(
-            f"Tomando foto en alta resolucion (canal {CANAL_RTSP_DEFAULT})..."
+            f"Tomando foto en alta resolucion (canal {CANAL_RTSP_FOTO})..."
         )
         self._captura_thread = threading.Thread(
             target=self._capturar_alta_res,
             args=(CameraService.url_rtsp(self._cfg.usuario, self._cfg.password,
-                                        self._cfg.ip, CANAL_RTSP_DEFAULT), self._generation, self._video_epoch),
+                                        self._cfg.ip, CANAL_RTSP_FOTO), self._generation, self._video_epoch),
             daemon=True,
         )
         self._captura_thread.start()
@@ -866,7 +884,7 @@ class MainWindow(QMainWindow):
             self._captura_alta_error.emit(
                 generation,
                 stream_epoch,
-                f"No se pudo capturar desde el canal {CANAL_RTSP_DEFAULT}"
+                f"No se pudo capturar desde el canal {CANAL_RTSP_FOTO}"
             )
             return
         self._captura_alta_lista.emit(generation, dict(frame=frame, stream_epoch=stream_epoch))

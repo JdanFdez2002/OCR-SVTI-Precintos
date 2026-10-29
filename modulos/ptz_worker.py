@@ -154,7 +154,17 @@ class PtzWorker(QThread):
                                     return command[:2] == (self._generation, self._intent) and self._activo
                             manual_ok = service.establecer_manual(ip, current)
                             if not manual_ok:
-                                self.focus_status.emit('Modo MANUAL no confirmado; se conserva el mando manual original')
+                                focus_state = getattr(service, 'focus_capability_state', None)
+                                focus_validation = getattr(service, 'focus_validation', None)
+                                if focus_state in ('unknown', 'incompatible') and focus_validation:
+                                    message = focus_validation
+                                else:
+                                    message = (
+                                        service.ultimo_error
+                                        or focus_validation
+                                        or 'Modo MANUAL no confirmado; se conserva el mando manual original'
+                                    )
+                                self.focus_status.emit(message)
                             if not current():
                                 continue
                         ok = service.mover_camara(ip, **command[2])

@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from config import CANAL_RTSP_FOTO
 from modulos.settings_store import CameraSettings
 
 
@@ -20,13 +21,15 @@ class SettingsDialog(QDialog):
         self._usuario = QLineEdit(cfg.usuario)
         self._password = QLineEdit(cfg.password)
         self._password.setEchoMode(QLineEdit.EchoMode.Password)
-        self._canal = QLineEdit(cfg.canal or "101")
+        self._canal = QLineEdit(CANAL_RTSP_FOTO)
+        self._canal.setReadOnly(True)
+        self._canal.setToolTip("El canal 101 se reserva para fotografías destinadas al OCR.")
 
         form = QFormLayout()
         form.addRow("IP de la cámara", self._ip)
         form.addRow("Usuario", self._usuario)
         form.addRow("Contraseña", self._password)
-        form.addRow("Canal RTSP", self._canal)
+        form.addRow("Canal RTSP de fotografías", self._canal)
 
         botones = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
@@ -43,5 +46,5 @@ class SettingsDialog(QDialog):
             ip=self._ip.text().strip(),
             usuario=self._usuario.text().strip(),
             password=self._password.text(),
-            canal=self._canal.text().strip() or "101",
+            canal=CANAL_RTSP_FOTO,
         )

@@ -12,10 +12,31 @@ ALTO_RETICULA_PCT = 0.20
 RAIZ_PROYECTO = Path(__file__).resolve().parent
 CARPETA_CAPTURAS = RAIZ_PROYECTO / "capturas_precintos"
 
-CANAL_RTSP_DEFAULT = "101"
-CANAL_RTSP_MEDIO = "102"
+# El canal 101 queda reservado para fotografías de alta resolución/OCR.
+# Sondeo de solo lectura realizado sobre la cámara configurada:
+#   103: sin frames frescos
+#   102: 704x576, adecuado para visualización/PTZ
+#   101: 2688x1520, adecuado para fotografía OCR
+CANAL_RTSP_FOTO = "101"
+CANAL_RTSP_VIDEO = "102"
+
+# Alias históricos conservados para consumidores y pruebas existentes.
+CANAL_RTSP_DEFAULT = CANAL_RTSP_FOTO
+CANAL_RTSP_MEDIO = CANAL_RTSP_VIDEO
 PUERTO_RTSP = 554
-VEL_FOCO = 5
+# PTZ continuo de la cÃ¡mara configurada: -100..100 para paneo, inclinaciÃ³n
+# y zoom. La UI usa el mÃ³dulo positivo 1..100; el signo indica direcciÃ³n.
+VEL_MOV_MIN = 1
+VEL_MOV_MAX = 100
+VEL_ZOOM_MIN = 1
+VEL_ZOOM_MAX = 100
+VEL_ZOOM = VEL_ZOOM_MAX
+# La cÃ¡mara no publica focusSpeed en sus capacidades disponibles. Se usa
+# el rango conservador 1..10 de la capacidad ISAPI general; validar efecto
+# Ã³ptico en terreno.
+VEL_FOCO_MIN = 1
+VEL_FOCO_MAX = 10
+VEL_FOCO = VEL_FOCO_MAX
 
 # Valores iniciales de investigación. Medir por equipo antes de aumentarlos.
 DETECCION_INTERVALO_S = float(os.environ.get('SEAI_DETECTION_INTERVAL_S', '2.0'))

@@ -26,8 +26,14 @@ import requests
 from requests.auth import HTTPDigestAuth
 
 
+FOCUS_CAPABILITIES_PENDING = 'pending'
+FOCUS_CAPABILITIES_VALIDATED = 'validated'
+FOCUS_CAPABILITIES_UNKNOWN = 'unknown'
+FOCUS_CAPABILITIES_INCOMPATIBLE = 'incompatible'
+
+
 class CameraService:
-    def __init__(self, user: str, password: str):
+    def __init__(self, user: str, password: str, *, allow_focus_auto_fallback=False):
         self.ultimo_frame = None
         self.lock = threading.Lock()
         self._stop = threading.Event()
@@ -42,46 +48,155 @@ class CameraService:
         self._focus_checked = False
         self._focus_config = None
         self._focus_modes = set()
-        self.focus_validation = 'Pendiente de validar capacidades y funcionamiento físico'
+        self.allow_focus_auto_fallback = bool(allow_focus_auto_fallback)
+        self.focus_capability_state = FOCUS_CAPABILITIES_PENDING
+        self.focus_capability_error = None
+        self.focus_validation = 'Capacidades de enfoque pendientes de validar'
+
+    @staticmethod
+    def _xml_local_name(tag):
+        return tag.split('}', 1)[-1]
+
+    @classmethod
+    def _focus_style(cls, root):
+        try:
+            return next(e for e in root.iter()
+                        if cls._xml_local_name(e.tag) == 'focusStyle')
+        except StopIteration as exc:
+            raise ValueError('La respuesta ISAPI no contiene focusStyle') from exc
+
+    @classmethod
+    def _get_error_detail(cls, response):
+        details = [f'HTTP {response.status_code}']
+        try:
+            root = ET.fromstring(response.text)
+            wanted = ('statusCode', 'statusString', 'subStatusCode', 'description')
+            for name in wanted:
+                value = next((e.text.strip() for e in root.iter()
+                              if cls._xml_local_name(e.tag) == name and e.text and e.text.strip()), None)
+                if value:
+                    details.append(f'{name}={value}')
+        except (ET.ParseError, AttributeError):
+            pass
+        return '; '.join(details)
+
+    def _get_xml(self, url, endpoint):
+        response = self.session.get(url, timeout=.5)
+        if not 200 <= response.status_code < 300:
+            raise ValueError(f'GET {endpoint}: {self._get_error_detail(response)}')
+        try:
+            return ET.fromstring(response.text)
+        except ET.ParseError as exc:
+            raise ValueError(f'GET {endpoint}: XML no válido') from exc
 
     def _focus_capabilities(self, ip, valid):
         if self._focus_checked:
-            return self._focus_config is not None
+            return (self._focus_config is not None
+                    and self.focus_capability_state != FOCUS_CAPABILITIES_UNKNOWN)
         base = f'http://{ip}/ISAPI/Image/channels/1/focusConfiguration'
-        try:
-            if not valid():
-                return False
-            response = self.session.get(base + '/capabilities', timeout=.5)
-            response.raise_for_status()
-            capabilities = ET.fromstring(response.text)
-            if capabilities.tag.split('}')[-1] != 'FocusConfiguration':
-                raise ValueError('La cámara no devuelve capacidades FocusConfiguration')
-            style = next(e for e in capabilities.iter() if e.tag.split('}')[-1] == 'focusStyle')
-            modes = set(style.get('opt', '').split(','))
-            if not {'AUTO', 'MANUAL'} <= modes:
-                raise ValueError('No anuncia AUTO y MANUAL; se conserva control manual original')
-            if not valid():
-                return False
-            response = self.session.get(base, timeout=.5)
-            response.raise_for_status()
-            config = ET.fromstring(response.text)
-            if config.tag.split('}')[-1] != 'FocusConfiguration':
-                raise ValueError('Configuración de enfoque no válida')
-            next(e for e in config.iter() if e.tag.split('}')[-1] == 'focusStyle')
-            self._focus_config, self._focus_modes = config, modes
-            self._focus_checked = True
-            self.focus_validation = 'AUTO/MANUAL anunciados por ISAPI; efecto óptico pendiente de prueba física'
-            return True
-        except Exception:
-            self._focus_checked = True
-            self.focus_validation = 'Autofocus no validado por ISAPI; control manual disponible'
+        if not valid():
             return False
 
-    def _focus_mode(self, ip, mode, valid):
-        if not self._focus_capabilities(ip, valid) or not valid():
+        modes = set()
+        capability_error = None
+        try:
+            capabilities = self._get_xml(
+                base + '/capabilities',
+                '/ISAPI/Image/channels/1/focusConfiguration/capabilities',
+            )
+            if self._xml_local_name(capabilities.tag) != 'FocusConfiguration':
+                raise ValueError('La cámara no devuelve capacidades FocusConfiguration')
+            style = self._focus_style(capabilities)
+            modes = {value.strip() for value in style.get('opt', '').split(',') if value.strip()}
+            if not modes:
+                raise ValueError('La respuesta de capacidades no contiene focusStyle@opt')
+        except Exception as exc:
+            capability_error = str(exc)
+
+        if not valid():
+            return False
+
+        config = None
+        config_error = None
+        current_mode = None
+        try:
+            config = self._get_xml(
+                base,
+                '/ISAPI/Image/channels/1/focusConfiguration',
+            )
+            if self._xml_local_name(config.tag) != 'FocusConfiguration':
+                raise ValueError('Configuración de enfoque no válida')
+            current_mode = (self._focus_style(config).text or '').strip() or None
+        except Exception as exc:
+            config_error = str(exc)
+
+        if not valid():
+            return False
+
+        self._focus_checked = True
+        self._focus_modes = modes
+        self._focus_config = config
+
+        if capability_error:
+            self.focus_capability_state = FOCUS_CAPABILITIES_UNKNOWN
+            self.focus_capability_error = capability_error
+            actual = current_mode or 'desconocido'
+            self.focus_validation = (
+                'Autofoco no validado: capacidades ISAPI desconocidas; '
+                f'{capability_error}; focusStyle actual={actual}; '
+                'no se envía PUT automático'
+            )
+            return False
+
+        if config_error:
+            self.focus_capability_state = FOCUS_CAPABILITIES_UNKNOWN
+            self.focus_capability_error = config_error
+            self.focus_validation = (
+                'Autofoco no validado: configuración ISAPI no verificable; '
+                f'{config_error}; no se envía PUT automático'
+            )
+            return False
+
+        if 'AUTO' not in modes:
+            self.focus_capability_state = FOCUS_CAPABILITIES_INCOMPATIBLE
+            self.focus_capability_error = (
+                'AUTO no figura en focusStyle@opt=' + ','.join(sorted(modes))
+            )
+            self.focus_validation = (
+                'Autofoco AUTO incompatible confirmado por ISAPI: '
+                f'focusStyle@opt={",".join(sorted(modes))}; '
+                f'focusStyle actual={current_mode or "desconocido"}'
+            )
+            return True
+
+        self.focus_capability_state = FOCUS_CAPABILITIES_VALIDATED
+        self.focus_capability_error = None
+        self.focus_validation = (
+            'AUTO anunciado por ISAPI; modos=' + ','.join(sorted(modes)) +
+            '; efecto óptico pendiente de prueba física'
+        )
+        return True
+
+    def _focus_mode(self, ip, mode, valid, *, allow_unknown=False):
+        capabilities_ok = self._focus_capabilities(ip, valid)
+        fallback = (
+            allow_unknown and mode == 'AUTO'
+            and self.focus_capability_state == FOCUS_CAPABILITIES_UNKNOWN
+            and self._focus_config is not None
+        )
+        if (not capabilities_ok and not fallback) or not valid():
+            return False
+        if mode not in self._focus_modes and not fallback:
+            self.focus_capability_state = FOCUS_CAPABILITIES_INCOMPATIBLE
+            self.focus_capability_error = f'{mode} no figura en focusStyle@opt'
+            self.focus_validation = (
+                f'Modo de enfoque {mode} no anunciado por ISAPI; '
+                f'focusStyle@opt={",".join(sorted(self._focus_modes))}; '
+                'no se envía PUT'
+            )
             return False
         config = copy.deepcopy(self._focus_config)
-        style = next(e for e in config.iter() if e.tag.split('}')[-1] == 'focusStyle')
+        style = self._focus_style(config)
         style.text = mode
         if not valid():
             return False
@@ -92,16 +207,39 @@ class CameraService:
         return ok
 
     def enfocar_nativo(self, ip, valid=lambda: True):
-        ok = self._focus_mode(ip, 'AUTO', valid)
+        self._focus_capabilities(ip, valid)
+        fallback = (
+            self.allow_focus_auto_fallback
+            and self.focus_capability_state == FOCUS_CAPABILITIES_UNKNOWN
+            and self._focus_config is not None
+        )
+        ok = self._focus_mode(ip, 'AUTO', valid, allow_unknown=fallback)
         if not valid():
             return 'Autofocus cancelado por una orden posterior'
-        return ('Enfoque nativo AUTO solicitado; validar efecto físico' if ok else
-                (self.ultimo_error or self.focus_validation))
+        if ok:
+            if fallback:
+                self.focus_validation = (
+                    'Enfoque nativo AUTO solicitado con capacidades ISAPI no disponibles; '
+                    'validar efecto físico'
+                )
+                return self.focus_validation
+            return 'Enfoque nativo AUTO solicitado; validar efecto físico'
+        if fallback:
+            return self.ultimo_error or self.focus_validation
+        if self.focus_capability_state in (FOCUS_CAPABILITIES_UNKNOWN,
+                                            FOCUS_CAPABILITIES_INCOMPATIBLE):
+            return self.focus_validation
+        return self.ultimo_error or self.focus_validation
 
     def establecer_manual(self, ip, valid=lambda: True):
         # Sólo se cambia el modo si la cámara lo anuncia. El movimiento manual
         # original permanece disponible si no ofrece FocusConfiguration.
         if not self._focus_capabilities(ip, valid):
+            if self.focus_capability_state == FOCUS_CAPABILITIES_UNKNOWN:
+                self.focus_validation = (
+                    'Modo MANUAL no confirmado por ISAPI; '
+                    'se conserva el control manual continuo'
+                )
             return False
         return self._focus_mode(ip, 'MANUAL', valid)
 

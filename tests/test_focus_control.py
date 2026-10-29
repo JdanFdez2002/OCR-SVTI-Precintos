@@ -9,12 +9,18 @@ from modulos.ptz_worker import PtzWorker
 
 
 class FocusServiceTests(unittest.TestCase):
+    @staticmethod
+    def xml_response(text, status_code=200):
+        response = Mock(status_code=status_code, text=text)
+        response.raise_for_status.return_value = None
+        return response
+
     def make_service(self, modes='AUTO,MANUAL,SEMIAUTOMATIC'):
         service = CameraService('fixture','fixture')
         service.session = Mock()
         service.session.get.side_effect = [
-            Mock(text=f'<FocusConfiguration><focusStyle opt="{modes}"/></FocusConfiguration>'),
-            Mock(text='<FocusConfiguration><focusStyle>SEMIAUTOMATIC</focusStyle><focusLimited>1000</focusLimited></FocusConfiguration>')]
+            self.xml_response(f'<FocusConfiguration><focusStyle opt="{modes}"/></FocusConfiguration>'),
+            self.xml_response('<FocusConfiguration><focusStyle>SEMIAUTOMATIC</focusStyle><focusLimited>1000</focusLimited></FocusConfiguration>')]
         service.session.put.return_value = Mock(status_code=200,text='<ResponseStatus><statusCode>1</statusCode></ResponseStatus>')
         return service
 
@@ -32,7 +38,37 @@ class FocusServiceTests(unittest.TestCase):
 
     def test_unadvertised_modes_never_issue_automatic_put(self):
         service = self.make_service('MANUAL')
-        service.enfocar_nativo('fixture')
+        status = service.enfocar_nativo('fixture')
+        self.assertEqual(service.focus_capability_state, 'incompatible')
+        self.assertIn('focusStyle@opt=MANUAL', status)
+        service.session.put.assert_not_called()
+
+    def test_capabilities_403_is_unknown_and_reports_real_error_without_put(self):
+        service = CameraService('fixture', 'fixture')
+        service.session = Mock()
+        service.session.get.side_effect = [
+            self.xml_response(
+                '<ResponseStatus><statusCode>4</statusCode>'
+                '<statusString>Invalid Operation</statusString>'
+                '<subStatusCode>invalidOperation</subStatusCode>'
+                '<description>unsupported capabilities endpoint</description>'
+                '</ResponseStatus>',
+                status_code=403,
+            ),
+            self.xml_response(
+                '<FocusConfiguration><focusStyle>MANUAL</focusStyle>'
+                '<focusLimited>150</focusLimited></FocusConfiguration>'
+            ),
+        ]
+
+        status = service.enfocar_nativo('fixture')
+
+        self.assertEqual(service.focus_capability_state, 'unknown')
+        self.assertIn('HTTP 403', status)
+        self.assertIn('invalidOperation', status)
+        self.assertIn('focusStyle actual=MANUAL', status)
+        self.assertIn('no se envía PUT automático', status)
+        self.assertEqual(service.session.get.call_count, 2)
         service.session.put.assert_not_called()
 
     def test_manual_order_during_capability_get_cancels_pending_auto(self):

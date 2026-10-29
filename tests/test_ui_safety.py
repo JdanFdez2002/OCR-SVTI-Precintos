@@ -21,7 +21,7 @@ from ui.main_window import MainWindow
 from motor import MotorWindow
 from modulos.ocr_reader import RecognitionResult
 from PySide6.QtWidgets import QTableWidgetItem
-from config import CANAL_RTSP_DEFAULT
+from config import CANAL_RTSP_FOTO, CANAL_RTSP_VIDEO
 
 
 class UiSafetyTests(unittest.TestCase):
@@ -63,19 +63,30 @@ class UiSafetyTests(unittest.TestCase):
             self.assertEqual(read.call_args.kwargs['input_mode'],'full_photo')
             self.assertNotIn('manifest',read.call_args.kwargs)
 
-    def test_high_resolution_preview_reuses_frame_without_second_rtsp_connection(self):
+    def test_video_connects_on_low_resolution_channel(self):
         w = self.window
-        w._canal_activo,w._video_epoch = CANAL_RTSP_DEFAULT,1
+        with patch('ui.main_window.CameraService') as camera:
+            camera.return_value.iniciar_lectura.return_value = Mock()
+            w._conectar()
+            camera.url_rtsp.assert_called_once_with(
+                w._cfg.usuario, w._cfg.password, w._cfg.ip, CANAL_RTSP_VIDEO
+            )
+            w._desconectar()
+
+    def test_capture_always_uses_photo_channel_in_background(self):
+        w = self.window
+        w._canal_activo,w._video_epoch = CANAL_RTSP_VIDEO,1
         w._service = Mock()
-        frame = np.zeros((180,320,3),np.uint8)
-        w._service.copiar_muestra.return_value = (frame,1,time.monotonic(),1)
         w._btn_capturar.setEnabled(True)
-        with patch.object(w,'_procesar_captura_alta') as process,patch('ui.main_window.CameraService.capturar_frame_rtsp') as opening:
+        with patch('ui.main_window.CameraService.url_rtsp', return_value='rtsp://fixture') as url, \
+                patch('ui.main_window.threading.Thread') as thread:
             w._capturar()
-            opening.assert_not_called()
-            process.assert_called_once()
-            np.testing.assert_array_equal(process.call_args.args[1]['frame'],frame)
-            self.assertIsNone(w._captura_thread)
+            url.assert_called_once_with(
+                w._cfg.usuario, w._cfg.password, w._cfg.ip, CANAL_RTSP_FOTO
+            )
+            thread.assert_called_once()
+            thread.return_value.start.assert_called_once()
+            w._service.copiar_muestra.assert_not_called()
 
     def test_video_default_never_queues_detection_and_skips_repeated_conversion(self):
         w = self.window
@@ -153,6 +164,85 @@ class UiSafetyTests(unittest.TestCase):
         with patch.object(w,'_atajos_globales_activos',return_value=False),patch.object(w._ptz,'enviar') as send:
             self.assertTrue(w.eventFilter(QLineEdit(),event))
             send.assert_called_once_with(0,0,0,0,0)
+
+    def test_held_direction_keys_combine_and_keep_remaining_direction(self):
+        w = self.window
+        w._service = Mock()
+        widget = QLineEdit()
+        key_press = lambda key: QKeyEvent(
+            QEvent.Type.KeyPress, key, Qt.KeyboardModifier.NoModifier
+        )
+        key_release = lambda key: QKeyEvent(
+            QEvent.Type.KeyRelease, key, Qt.KeyboardModifier.NoModifier
+        )
+
+        with patch.object(w, '_atajos_globales_activos', return_value=True), \
+                patch.object(w._ptz, 'enviar') as send:
+            self.assertTrue(w.eventFilter(widget, key_press(Qt.Key.Key_W)))
+            self.assertEqual(send.call_args.kwargs['tilt'], 50)
+
+            send.reset_mock()
+            self.assertTrue(w.eventFilter(widget, key_press(Qt.Key.Key_D)))
+            self.assertEqual(send.call_args.kwargs['pan'], 50)
+            self.assertEqual(send.call_args.kwargs['tilt'], 50)
+
+            send.reset_mock()
+            self.assertTrue(w.eventFilter(widget, key_release(Qt.Key.Key_D)))
+            self.assertEqual(send.call_args.kwargs['pan'], 0)
+            self.assertEqual(send.call_args.kwargs['tilt'], 50)
+
+            send.reset_mock()
+            self.assertTrue(w.eventFilter(widget, key_release(Qt.Key.Key_W)))
+            send.assert_called_once_with(0, 0, 0, 0, 0)
+
+    def test_rotation_slider_and_fixed_optic_speeds_reach_ptz_commands(self):
+        w = self.window
+        w._service = Mock()
+        self.assertFalse(hasattr(w, '_slider_vel_zoom'))
+        self.assertFalse(hasattr(w, '_slider_vel_foco'))
+        w._slider_vel_mov.setValue(73)
+
+        with patch.object(w._ptz, 'enviar') as send:
+            self.assertTrue(w._comando_tecla(Qt.Key.Key_D))
+            self.assertEqual(send.call_args.kwargs['pan'], 73)
+
+            send.reset_mock()
+            self.assertTrue(w._comando_tecla(Qt.Key.Key_I))
+            self.assertEqual(send.call_args.kwargs['zoom'], 100)
+
+            send.reset_mock()
+            self.assertTrue(w._comando_tecla(Qt.Key.Key_J))
+            self.assertEqual(send.call_args.kwargs['focus'], 10)
+
+            send.reset_mock()
+            self.assertTrue(w._comando_tecla(Qt.Key.Key_L))
+            self.assertEqual(send.call_args.kwargs['focus'], -10)
+
+            send.reset_mock()
+            w._btn_right.motion_start.emit()
+            self.assertEqual(send.call_args.kwargs['pan'], 73)
+
+            send.reset_mock()
+            w._btn_zoom_in.motion_start.emit()
+            self.assertEqual(send.call_args.kwargs['zoom'], 100)
+
+            send.reset_mock()
+            w._btn_foco_cerca.motion_start.emit()
+            self.assertEqual(send.call_args.kwargs['focus'], 10)
+
+    def test_only_rotation_speed_remains_adjustable_and_optic_speeds_are_fixed(self):
+        w = self.window
+
+        self.assertEqual((w._slider_vel_mov.minimum(), w._slider_vel_mov.maximum()), (1, 100))
+        self.assertFalse(hasattr(w, '_slider_vel_zoom'))
+        self.assertFalse(hasattr(w, '_slider_vel_foco'))
+        self.assertEqual(w._vel_zoom, 100)
+        self.assertEqual(w._vel_foco, 10)
+
+        w._slider_vel_mov.setValue(0)
+        self.assertEqual(w._slider_vel_mov.value(), 1)
+        w._slider_vel_mov.setValue(101)
+        self.assertEqual(w._slider_vel_mov.value(), 100)
 
     def test_audit_precedes_state_change_and_later_reading_never_downgrades(self):
         w = self.window
